@@ -1,0 +1,24 @@
+#ifndef CONVERGENCE_TABLE_H
+#define CONVERGENCE_TABLE_H
+
+#include "Wrapper.h"
+#include "MCStatistics.h"
+
+class ConvergenceTable: public StatisticsMC
+{
+private:
+    Wrapper<StatisticsMC> Inner;
+    std::vector<std::vector<double> > ResultsSoFar;
+    unsigned long StoppingPoint;
+    unsigned long PathsDone;
+
+public:
+    ConvergenceTable(const Wrapper<StatisticsMC>& Inner_);
+
+    virtual StatisticsMC* clone() const;
+    virtual void DumpOneResult(double result);
+    virtual std::vector<std::vector<double> > GetResultsSoFar() const;
+};
+
+
+#endif // !CONVERGENCE_TABLE_H
