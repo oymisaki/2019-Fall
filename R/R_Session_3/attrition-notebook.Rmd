@@ -1,0 +1,950 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Tidy models and h2o. 
+
+https://github.com/tidymodels
+
+```{r setup, include=FALSE}
+
+library(survival)
+library(parsnip)
+library(broom)
+library(rsample)
+library(yardstick)
+library(randomForest)
+library(glmnet)
+library(recipes)
+library(h2o)
+
+
+# EDA
+library(correlationfunnel)
+library(DataExplorer)
+
+# Core & Data Viz
+library(tidyverse)
+library(plotly)
+library(tidyquant)
+library(here)
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, comment = NA)
+```
+
+Our data and question for today: what causes employee attrition? We'll use the built-in `attrition` data set from the `rsample` package. 
+
+```{r}
+# access data
+attrition <- rsample::attrition
+
+
+# response variable
+head(attrition$Attrition)
+
+```
+
+### Data Exploration
+
+Let's use the newish `DataExplorer` package to explore our data before we get to modeling. 
+
+```{r}
+attrition %>% 
+  plot_missing()
+```
+
+
+```{r}
+attrition %>% 
+  plot_bar()
+```
+
+
+```{r}
+attrition %>% 
+  plot_histogram()
+```
+
+We can quickly see that some of our features are continuous and may need to be binned. 
+
+Let's check out the correlations amongst our continuous variables.
+
+```{r}
+attrition %>% 
+  plot_correlation( type = "c")
+```
+
+We can create box plots to see our distribution of continuous variables within Attrition levels.
+
+```{r}
+attrition %>% 
+plot_boxplot(by = "Attrition")
+```
+
+We want to investigate whether an employee attrited - let's see how imbalanced our data are. 
+
+
+```{r}
+attrition %>% 
+  count(Attrition) %>%
+  mutate(total = sum(n),
+         percentage = n/total) %>% 
+  ggplot(aes(x = Attrition, y = n)) +
+  geom_col(aes(fill = Attrition), width = .3) +
+  geom_text(aes(label = paste(round(percentage, 2) * 100, "%", sep = "")), nudge_y = 20)
+```
+
+If our model predicts that no one ever leaves this job, we will correct 84% of the time. Try to keep in mind that with zero model, for any given employee, the probability of leaving is 16%. 
+
+We can take some time to think about intuitions behind why certain features might be important. We can also use the new `correlationfunnel` package to bin our data and quickly see features ranked by correlation with our response.
+
+
+```{r}
+attrition %>% 
+    binarize() %>%
+    correlate(Attrition__Yes) %>% 
+    plot_correlation_funnel(interactive = TRUE, alpha = 0.7)
+
+```
+
+Focusing on the top 5, OverTime, Joblevel, MonthlyIncome, StockOptionLevel, YearsAtCompany. Nothing too crazy there but imagine a data set with a hundred features and less intuition about their importance. 
+
+Let's break this down by Attrition and OverTime, a binary variable.
+
+```{r}
+(
+attrition %>% 
+  group_by(OverTime) %>% 
+  count(Attrition) %>%
+  mutate(total = sum(n),
+         percentage = n/total) %>% 
+  ggplot(aes(x = OverTime, y = percentage)) +
+  geom_col(aes(fill = Attrition), position = "dodge", width = .4) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(y = "percent", title = "Percent Attrition by Overtime")
+) %>% ggplotly
+```
+
+### Preprocessing
+
+Let's use the new `rsample` and `recipes` package to preprocess, sample and 'feature engineer' our data before we get to modeling. 
+
+The `initial_split()` function allows us to create training and testing sets.
+
+```{r}
+set.seed(123)  # for reproducibility
+
+attrition_split <- initial_split(attrition, prop = .7)
+
+attrition_train <- training(attrition_split)
+attrition_test  <- testing(attrition_split)
+
+attrition_train %>% 
+  head()
+```
+
+Now we can do some clean up or 'engineering' of this data using the recipes package. I like recipes because of it's pre-built functions and the way it almost forces a step-by-step approach. 
+
+https://tidymodels.github.io/recipes/articles/Dummies.html
+
+```{r}
+attrition_train_prepped <- 
+recipe(Attrition ~ ., data = attrition_train) %>%
+    step_nzv(all_predictors()) %>% 
+    step_string2factor(all_nominal(), -all_outcomes()) %>%
+    step_dummy(all_nominal(), -all_outcomes()) %>%
+    step_center(all_numeric()) %>%
+    step_scale(all_numeric()) %>%
+    prep(data = attrition_train)
+```
+
+
+```{r}
+attrition_train_baked <- 
+  attrition_train_prepped %>% 
+  bake(new_data = attrition_train)
+
+attrition_test_baked <- 
+  attrition_train_prepped %>% 
+  bake(new_data = attrition_test)
+```
+
+
+### Classic Logistic regression
+
+Let's start with the top two from our correlation funnel.
+
+```{r}
+classic_model_1 <- 
+  glm(Attrition ~ OverTime + MonthlyIncome + JobLevel + StockOptionLevel, family = "binomial", data = attrition_train)
+
+tidy(classic_model_1)
+```
+
+
+```{r}
+predictions_classic_model_1 <- 
+predict(classic_model_1, newdata = attrition_train, type = "response") %>% 
+ enframe() %>% 
+ mutate(actual = attrition_train$Attrition, 
+        predicted = case_when(value > .3 ~ "No", 
+                              TRUE ~ "Yes"))
+  
+
+
+predictions_classic_model_1
+```
+
+Let's create a table for ease of viewing.
+
+```{r}
+table(predictions_classic_model_1$actual, predictions_classic_model_1$predicted) 
+
+table(predictions_classic_model_1$actual, predictions_classic_model_1$predicted) %>% 
+  prop.table() %>% 
+  round(3)
+```
+
+What is the predicted probability of leaving, for overtime equals yes and no, at the mean levels of income, job and stock option level?
+
+```{r}
+mean_variables <- 
+attrition %>% 
+  summarise(mean_monthly = mean(MonthlyIncome),
+            mean_job_level = mean(JobLevel),
+            mean_stock_option = mean(StockOptionLevel))
+
+
+predict(classic_model_1, 
+        tibble(MonthlyIncome = pull(mean_variables[1]), 
+               JobLevel = pull(mean_variables[2]), 
+               StockOptionLevel = pull(mean_variables[3]), 
+               OverTime = c("Yes", "No")), 
+        type = "response")
+
+```
+
+### Parsnip
+
+On to modeling with the `parsnip` package. What is the `parsnip` package? 
+
+It's a unified model interface that allows us to create a model specification, set an analytic engine, and then fit a model. 
+
+It’s a ‘unified’ interface in the sense that we can use the same scaffolding but insert different models, or different engines, or different modes.
+
+The documentation is an excellent resource, even if you don't want to use the package. 
+https://tidymodels.github.io/parsnip/articles/articles/Models.html
+
+
+```{r}
+parsnip_model_1 <- 
+  logistic_reg(mode = "classification") %>%
+  set_engine("glm") %>%
+  fit(Attrition ~ MonthlyIncome + OverTime_Yes + JobLevel + StockOptionLevel, data = attrition_train_baked)
+  
+```
+
+Compare to the classic as a sanity check.
+
+```{r}
+classic_model_1 %>% 
+  tidy()
+
+parsnip_model_1 %>% 
+  tidy()
+```
+
+
+```{r}
+predictions_parsnip <- 
+  parsnip_model_1 %>%
+  predict(new_data = attrition_test_baked, type = "prob") %>%
+  mutate(attrition_predicted = case_when(.pred_Yes >= .5 ~ "Yes", 
+                                      TRUE ~ "No") %>% factor()) %>% 
+  bind_cols(attrition_test_baked %>% select(Attrition))
+```
+
+```{r}
+yardstick::metrics(predictions_parsnip, truth = Attrition, estimate = attrition_predicted) 
+```
+
+### ROC curve
+
+For logistic regression, we can still use the `roc_curve()` function.
+
+True positive versus false positive
+
+```{r}
+roc_curve(predictions_parsnip, Attrition, .pred_No) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path(color = "cornflowerblue") +
+  geom_abline(lty = 3) +
+  coord_equal() +
+  theme_bw()
+```
+
+
+
+### Confusion matrix 
+
+CM shows false positives, false negatives, true positives, and true negatives. However some of the measures that are derived from it may take some reasoning with to fully understand their meaning and use.
+
+```{r}
+predictions_parsnip %>%
+  yardstick::conf_mat(Attrition, attrition_predicted) %>%
+  pluck(1) %>%
+  as_tibble() %>%
+  ggplot(aes(Prediction, Truth, alpha = n)) +
+  geom_tile(fill = "blue", show.legend = FALSE) +
+  geom_text(aes(label = n), colour = "white", alpha = 1, size = 8)
+```
+
+### Accuracy 
+
+The fraction of predictions the model got right and can be easily calculated by passing the predictions_glm to the metrics function. However, accuracy is not a very reliable metric as it will provide misleading results if the data set is unbalanced.
+
+```{r}
+predictions_parsnip %>%
+  metrics(Attrition, attrition_predicted) %>%
+  select(-.estimator) %>%
+  filter(.metric == "accuracy") 
+```
+
+
+### Precision and Recall
+
+Precision shows how frequently models return False Positives whereas Recall looks at how sensitive models are to False Negatives.
+
+precision = TP/TP + FP, in the confusion matrix.
+
+Recall is TP/ FN + TP, i.e. this is when the model doesn't choose positive or Attrite when it should have.
+
+
+```{r}
+
+pr_curve(predictions_parsnip, Attrition, .pred_No) %>%
+  ggplot(aes(x = .threshold)) +
+  geom_line(aes(y = precision), color = "blue", size = 1) +
+  geom_line(aes(y = recall), color = "red", size = 1) +
+  labs(title = "Precision vs Recall", y = "value")
+```
+
+Extract for a table
+
+```{r}
+tibble(
+  "precision" = 
+     precision(predictions_parsnip, Attrition, attrition_predicted) %>%
+     select(.estimate),
+  "recall" = 
+     recall(predictions_parsnip, Attrition, attrition_predicted) %>%
+     select(.estimate)
+) %>%
+  unnest()
+```
+
+### F1 Score
+
+Another popular performance assessment metric is the F1 Score, which is the harmonic average of the precision and recall. An F1 score reaches its best value at 1 with perfect precision and recall.
+
+There is a tradeoff between precision and recall that is sensitive to the probability threshold. F1 is trying to balance this. 
+
+```{r}
+
+predictions_parsnip %>%
+  f_meas(Attrition, attrition_predicted) %>%
+  select(-.estimator) 
+```
+
+
+### Penalized Logistic Regression
+
+Regularization methods provide a means to constrain or regularize the estimated coefficients, which can reduce the variance and decrease out of sample error.
+
+Why penalize or regularize? 
+Many data sets contain a larger number of features than is needed for the model. Select significant variables by shrinking the coefficients of unimportant predictors to zero. 
+
+To run a lasso regression, we change the mixture to 1. We also change the engine to `glmnet`, the R package that will power this analysis.
+
+
+Note does not accept categorical predictors, so one has to convert to numeric values before passing them to glmnet. Recall our preprocessing recipe: 
+
+```{r}
+recipe(Attrition ~ ., data = attrition_train) %>%
+    step_nzv(all_predictors()) %>% 
+    step_string2factor(all_nominal(), -all_outcomes()) %>%
+    step_dummy(all_nominal(), -all_outcomes()) %>%
+    step_center(all_numeric()) %>%
+    step_scale(all_numeric()) %>%
+    prep(data = attrition_train)
+```
+
+
+
+```{r}
+lasso_model_parsnip <-
+  logistic_reg(mode = "classification", mixture = 1) %>%
+    set_engine("glmnet", nlambda = 10) %>%
+    fit(Attrition ~ ., data = attrition_train_baked)
+
+```
+
+ A data frame with just the features
+ 
+```{r}
+features_tbl <- 
+  attrition_train_baked %>% 
+  select(-Attrition) 
+
+features_tbl
+```
+
+A vector with the actual responses (must be numeric—0/1 for binary classification problems).
+
+```{r}
+response_vec <- attrition_train_baked %>% pull(Attrition) %>% as.numeric() - 1
+
+response_vec %>% 
+  head()
+```
+ 
+ Let's predict. Remeber, we set lambda = 10, there are 10 penalization parameters and we want predictions for each one. 10 sets of predictions.
+ 
+```{r}
+lasso_model_parsnip %>%
+multi_predict(new_data = attrition_test_baked, type = "prob") %>%
+  bind_cols(actual_attrition = attrition_test_baked %>% select(Attrition)) %>% 
+  unnest(.pred) %>%
+  arrange(penalty) %>%
+  mutate(attrition_predicted = case_when(.pred_No >= .5 ~ "No", 
+                                      TRUE ~ "Yes") %>% factor())  %>% 
+  nest(-penalty) %>%
+  # if we want to choose one penalty and scrutinize, can slice
+  slice(1) %>%
+  unnest(data) 
+```
+
+
+```{r}
+predictions_one_lambda_lasso <- 
+lasso_model_parsnip  %>%
+multi_predict(new_data = attrition_test_baked, type = "prob") %>%
+  bind_cols(actual_attrition = attrition_test_baked %>% select(Attrition)) %>% 
+  unnest(.pred) %>%
+  arrange(penalty) %>%
+  mutate(attrition_predicted = case_when(.pred_No >= .5 ~ "No", 
+                                      TRUE ~ "Yes") %>% factor())  %>% 
+  nest(-penalty) %>%
+  slice(1) %>%
+  unnest(data) 
+
+```
+
+### ROC Curve
+
+```{r}
+predictions_one_lambda_lasso %>% 
+roc_curve(Attrition, .pred_No) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path(color = "cornflowerblue") +
+  geom_abline(lty = 3) +
+  coord_equal() +
+  theme_bw()
+```
+
+
+### Confusion Matrix
+
+```{r}
+
+predictions_one_lambda_lasso %>%
+  yardstick::conf_mat(Attrition, attrition_predicted) %>%
+  pluck(1) %>%
+  as_tibble() %>%
+  ggplot(aes(Prediction, Truth, alpha = n)) +
+  geom_tile(fill = "blue", show.legend = FALSE) +
+  geom_text(aes(label = n), colour = "white", alpha = 1, size = 8)
+
+```
+
+
+
+### Precision and Recall
+
+Precision shows how frequently models return False Positives whereas Recall looks at how sensitive models are to False Negatives.
+
+precision = TP/TP + FP, in the confusion matrix.
+
+Recall is TP/ FN + TP, i.e. this is when the model doesn't choose positive or Attrite when it should have.
+
+
+```{r}
+
+pr_curve(predictions_one_lambda_lasso, Attrition, .pred_No) %>%
+ggplot(aes(x = .threshold)) +
+geom_line(aes(y = precision), color = "blue", size = 1) +
+    geom_line(aes(y = recall), color = "red", size = 1) +
+    theme_tq() +
+    labs(title = "Precision vs Recall", y = "value")
+```
+
+Extract for a table
+
+```{r}
+tibble(
+  "precision" = 
+     precision(predictions_one_lambda_lasso, Attrition, attrition_predicted) %>%
+     select(.estimate),
+  "recall" = 
+     recall(predictions_one_lambda_lasso, Attrition, attrition_predicted) %>%
+     select(.estimate)
+) %>%
+  unnest()
+```
+
+### F1 Score
+
+Another popular performance assessment metric is the F1 Score, which is the harmonic average of the precision and recall. An F1 score reaches its best value at 1 with perfect precision and recall.
+
+There is a tradeoff between precision and recall that is sensitive to the probability threshold. F1 is trying to balance this. 
+
+```{r}
+
+predictions_one_lambda_lasso %>%
+  f_meas(Attrition, attrition_predicted) %>%
+  select(-.estimator) 
+```
+
+### Gain Lift
+
+What are gain and lift? 
+
+Start with our predictions - with no model at all we'd expect the actual percentage to leave, we would just take the global probability and pay attention at all to individual characteristics.
+
+The total expected attrition is obs * probability of attrition, or 16% * 441 = 70 people. Gain is what we'd expect from our model divided by what we'd expect at random.
+
+```{r}
+predictions_one_lambda_lasso
+```
+
+
+```{r}
+
+predictions_one_lambda_lasso %>% 
+gain_curve(Attrition, .pred_No) %>%
+  ggplot(aes(x = .percent_tested, y = .percent_found)) + 
+  geom_line(color = "cornflowerblue")
+```
+
+gain capture ==  this represents the area under the black curve, but above the
+45 degree line, divided by the area of the shaded triangle.
+
+```{r}
+
+predictions_one_lambda_lasso %>% 
+lift_curve(Attrition, .pred_No) %>%
+  ggplot(aes(x = .percent_tested, y = .lift)) + 
+  geom_line(color = "cornflowerblue")
+```
+
+
+```{r}
+tibble(
+  "precision" = 
+     precision(predictions_one_lambda_lasso, Attrition, attrition_predicted) %>%
+     select(.estimate),
+  "recall" = 
+     recall(predictions_one_lambda_lasso, Attrition, attrition_predicted) %>%
+     select(.estimate)
+) %>%
+  unnest()
+```
+
+
+Visualizing lambdas
+
+```{r}
+var_names <- 
+  attrition_train_baked %>% 
+  ungroup() %>% 
+  colnames() %>% 
+  tibble() %>% 
+  rename(vars = ".") %>% 
+  add_column(i = seq(1, nrow(.)))
+
+lasso_lambda_values <- 
+lasso_model_parsnip$fit$lambda %>% 
+  as_tibble() %>% 
+  mutate(j = seq(1, length(lasso_model_parsnip$fit$lambda)))
+
+ggplotly(
+summary(lasso_model_parsnip$fit$beta) %>% 
+  as_tibble() %>% 
+  left_join(var_names, by = "i") %>% 
+  left_join(lasso_lambda_values, by = "j") %>% 
+  select(vars, lambda = value, beta = x) %>% 
+  group_by(vars) %>% 
+  ggplot(aes(x = lambda, y = beta, color = vars)) +
+  geom_line()
+)
+```
+
+
+### Random Forest
+
+We use the same scaffolding, but change to `rand_forest`, set our parameters and our engine. Remember `parsnip` is a modeling interface, it's allowing us to fire up new models using a structure.
+
+```{r}
+rand_forest_model_1 <- 
+  rand_forest(
+    mode = "classification",
+    mtry = 3,
+    trees = 200) %>%
+  set_engine("ranger",importance = "impurity") %>%
+  fit(Attrition ~ ., data = attrition_train_baked)
+```
+
+
+
+# H2O 
+
+What's h2o and the documentation: 
+
+H2O is an open source, in-memory, distributed, fast, and scalable machine learning and predictive analytics platform that allows you to build machine learning models on big data and provides easy productionalization of those models in an enterprise environment.
+
+H2O’s core code is written in Java. Inside H2O, a Distributed Key/Value store is used to access and reference data, models, objects, etc., across all nodes and machines. The algorithms are implemented on top of H2O’s distributed Map/Reduce framework and utilize the Java Fork/Join framework for multi-threading. The data is read in parallel and is distributed across the cluster and stored in memory in a columnar format in a compressed way. H2O’s data parser has built-in intelligence to guess the schema of the incoming dataset and supports data ingest from multiple sources in various formats.
+
+H2O’s REST API allows access to all the capabilities of H2O from an external program or script via JSON over HTTP. The Rest API is used by H2O’s web interface (Flow UI), R binding (H2O-R), and Python binding (H2O-Python).
+
+http://docs.h2o.ai/h2o/latest-stable/h2o-docs/welcome.html
+
+
+```{r}
+# fire up h2o java vm 
+h2o.init()
+```
+
+```{r}
+?h2o.automl
+```
+
+Takes a few arguments: target, features, training set, testing set.
+Note that h2o has a special data frame type.
+
+```{r}
+as.h2o(attrition_train_baked)
+```
+
+Running the next code chunk takes about 1 minute on my machine.
+
+```{r}
+y <- "Attrition"
+
+x <- 
+  attrition_train_baked %>% 
+  select(-Attrition) %>% 
+  colnames()
+
+
+h2o_automl <- h2o.automl(
+    x = x,
+    y = y,
+    training_frame   = as.h2o(attrition_train_baked),
+    validation_frame = as.h2o(attrition_test_baked),
+    #default is 3600 seconds, or one hour
+    max_runtime_secs = 30, 
+    nfolds = 5
+)
+```
+
+`nfolds` is performing k-fold cross validation. What is it? Why use it? helps determine which parameter are best by testing on multiple subsamples. More stable models. We run the model on each split, get k performance metrics and average them. 
+
+http://docs.h2o.ai/h2o/latest-stable/h2o-docs/cross-validation.html
+
+Let's inspect the results
+
+
+```{r}
+typeof(h2o_automl)
+```
+
+S4 object, has slots, accessed with `@`.
+
+```{r}
+
+slotNames(h2o_automl)
+```
+
+Inspect the leaderboard and the leader
+
+```{r}
+h2o_automl@leaderboard
+```
+Let's dig into the leader a bit
+
+```{r}
+h2o_automl@leader
+```
+
+
+Get models "by hand", meaning look a the board, note the name, then `getModel`.
+
+```{r}
+h2o.getModel("name of model")
+
+h2o.getModel("name of model")
+```
+
+That gets cumbersome. We can build a function to extract the models too.
+
+```{r, message = T}
+
+# Extracts and H2O model name by a position so can more easily use h2o.getModel()
+extract_h2o_model_name_by_position <- function(h2o_leaderboard, n = 1, verbose = TRUE) {
+    
+    model_name <- 
+      h2o_leaderboard %>%
+        as_tibble() %>%
+        slice(n) %>%
+        pull(model_id) 
+    
+    if(verbose) message(model_name)
+    
+    return(model_name)
+    
+}
+
+
+top_model <- 
+  h2o_automl@leaderboard %>% 
+extract_h2o_model_name_by_position(1) %>% 
+    h2o.getModel()
+```
+
+```{r}
+
+predictions <- 
+  h2o.predict(top_model, newdata = as.h2o(attrition_test_baked))
+
+typeof(predictions)
+
+```
+
+Same as we did earlier, let's add back in the actual observations of Attrition.
+
+```{r}
+predictions_tbl <- 
+  predictions %>% as_tibble() %>% 
+mutate(actual = attrition_test_baked$Attrition)
+
+```
+
+Now we can evaluate this model with `h2o.performance()`.
+
+```{r}
+performance_h2o <- h2o.performance(top_model, newdata = as.h2o(attrition_test_baked))
+
+typeof(performance_h2o)
+
+performance_h2o %>% 
+  slotNames()
+
+performance_h2o@metrics
+```
+
+
+### Summary stats
+
+```{r}
+h2o.auc(performance_h2o)
+# h2o.giniCoef(performance_h2o)
+# h2o.logloss(performance_h2o)
+```
+
+### ROC Plot
+
+```{r}
+    
+    
+    performance_h2o %>%
+        h2o.metric() %>%
+        as.tibble() %>%
+        mutate(auc = h2o.auc(performance_h2o)) %>%
+        select(tpr, fpr, auc) %>%
+      mutate(auc  = auc %>% round(3) %>% as.character() %>% as_factor()) %>% 
+    ggplot(aes(x = fpr, y = tpr)) +
+    geom_line(size = 1, color = "blue") +
+    theme(legend.direction = "vertical") +
+    labs(
+        title = "ROC Plot",
+        x = "false positive",
+        y = "true positive"
+    )
+  
+    
+
+```
+
+### Confusion matrix
+
+```{r}
+h2o.confusionMatrix(top_model)
+
+h2o.confusionMatrix(performance_h2o)
+
+```
+
+### Performance Table 
+
+```{r}
+performance_tbl <- performance_h2o %>%
+    h2o.metric() %>%
+    as.tibble() 
+
+performance_tbl
+
+performance_tbl %>%
+    filter(f1 == max(f1))
+```
+
+### Precision versus Recall plot
+
+```{r}
+
+performance_tbl %>%
+    ggplot(aes(x = threshold)) +
+    geom_line(aes(y = precision), color = "blue", size = 1) +
+    geom_line(aes(y = recall), color = "red", size = 1) +
+    geom_vline(xintercept = h2o.find_threshold_by_max_metric(performance_h2o, "f1")) +
+    theme_tq() +
+    labs(title = "Precision vs Recall", y = "value")
+
+```
+
+### Gain Lift
+
+```{r}
+gain_lift_tbl <- performance_h2o %>%
+            h2o.gainsLift() %>%
+            as.tibble() %>%
+            select(group, cumulative_data_fraction, cumulative_capture_rate, cumulative_lift) %>%
+        rename(
+            gain = cumulative_capture_rate,
+            lift = cumulative_lift
+        ) 
+```
+
+Gain Plot
+
+```{r}
+ gain_lift_tbl %>%
+        ggplot(aes_string("cumulative_data_fraction", "gain")) +
+        geom_line(color = "cornflowerblue") +
+        geom_segment(x = 0, y = 0, xend = 1, yend = 1, 
+                     color = "black") +
+        theme_tq() +
+        scale_color_tq() +
+        expand_limits(x = c(0, 1), y = c(0, 1)) +
+        labs(title = "Gain",
+             x = "Cumulative Data Fraction", y = "Gain") +
+        theme(legend.position = "none")
+```
+
+```{r}
+ 
+ gain_lift_tbl %>%
+        ggplot(aes_string("cumulative_data_fraction", "lift")) +
+        geom_line(color = "cornflowerblue") +
+        geom_segment(x = 0, y = 1, xend = 1, yend = 1, 
+                     color = "black") +
+        theme_tq() +
+        scale_color_tq() +
+        expand_limits(x = c(0, 1), y = c(0, 1)) +
+        labs(title = "Lift",
+             x = "Cumulative Data Fraction", y = "Lift") +
+        theme(legend.position = "none")
+```
+
+
+### Survival Analysis
+
+Incorporate information on not only whether an event takes place but also how long it takes.
+Subjects are followed until an 'event' occurs. In finance, that's usually some sort of economic event like defaulting on debt, leaving a job (think of all those jobs and employment forecasters out there), but we could expand out to a lot of company events.
+
+The survival curve S(t) is an estimate of the proportion of subjects who have not had an event at time t. 
+
+If we wish to estimate this function, we are estimating how many are still alive/employed/haven't defaulted at time t.
+
+```{r}
+attrition_surv_tbl <- 
+  attrition %>%
+  mutate(Attrition_Yes                   = Attrition == "Yes",
+         JobLevel_low                    = JobLevel == 1,
+         age_under_30                    = Age < 30,
+         Single                          = MaritalStatus == "Single"
+  ) %>%
+  select(
+    OverTime, Attrition_Yes, JobLevel_low, age_under_30, Single, TotalWorkingYears
+  ) 
+```
+
+```{r}
+
+model_coxph <- 
+  coxph(Surv(TotalWorkingYears, Attrition_Yes) ~ . - OverTime + strata(OverTime), data = attrition_surv_tbl)
+
+summary(model_coxph)
+
+# Overall performance
+glance(model_coxph) %>% 
+  glimpse()
+
+# Regression Estimates
+tidy(model_coxph)
+```
+
+
+```{r}
+# Mortality Table
+model_coxph %>%
+  # pipe model to survfit, this gives us the mortality table
+    survfit() %>%
+    tidy()
+```
+
+```{r}
+model_coxph %>%
+  # pipe model to survfit, this gives us teh mortality table
+  survfit() %>%
+  tidy() %>%
+  # pipe straight to ggplot
+  ggplot(aes(x = time, y = estimate, color = strata)) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.3) +
+  geom_line(size = 1) +
+  theme_tq() +
+  scale_color_tq() +
+        scale_y_continuous(labels = scales::percent_format()) +
+        labs(title = "Attrition Problem", color = "Overtime", 
+             x = "Years working", y = "Percentage of Employing Staying")
+```
+
+
+```{r}
+
+(
+model_coxph %>%
+  # pipe model to survfit, this gives us teh mortality table
+  survfit() %>%
+  tidy() %>%
+  # pipe straight to ggplot
+  ggplot(aes(x = time, y = 1 - estimate, color = strata)) +
+  geom_line(size = 1) +
+  theme_light() +
+  scale_color_tq() +
+        scale_y_continuous(labels = scales::percent_format()) +
+        labs(title = "Attrition Problem", color = "Overtime", 
+             x = "Years working", y = "Percentage of Employing Attriting")
+) %>% ggplotly()
+```
+
+

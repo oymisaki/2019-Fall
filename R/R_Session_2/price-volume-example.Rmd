@@ -1,0 +1,790 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+  
+
+```{r setup, message = FALSE, warning = FALSE}
+
+# install.packages("tidyverse")
+# install.packaged("highcharter")
+# install.packages("tidyquant")
+# install.packages("tibbletime")
+# install.packages("tidymodels")
+# install.packages("timetk")
+# install.packages("corrr")
+# install.packages("plotly")
+# install.packages("scales")
+# install.packages("readxl")
+# or
+
+# 
+# for (pkg in c('tidyquant', 'tidyverse', 'plotly', 'highcharter', 'timetk', 'corrr', 'scales', 'tidymodels', 'tibbletime', 'readxl')) 
+#   if (!requireNamespace(pkg)) install.packages(pkg)
+
+library(tidymodels)
+library(tidyverse) 
+library(tidyquant)
+library(timetk)
+library(highcharter)
+library(readxl)
+library(corrr)
+library(scales)
+library(plotly)
+
+theme_update(plot.title = element_text(hjust = 0.5))
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, comment = NA)
+```
+
+
+### Our data for today
+
+Our data for today == price and volume data for several ETFs 
+
+    + "SPY"
+    + "EFA"
+    + "IJS"
+    + "EEM"
+    + "AGG"
+    + "TLT"
+    + "VNQ"
+    + "UUP"
+    
+The price data is saved in two excel spreadsheets. We need to import them and then combine them.
+
+
+### Import price data
+
+```{r}
+library(readxl)
+
+
+prices_2007_2012 <- 
+  read_excel("prices_2007_2012.xlsx") %>% 
+  mutate(date = ymd(date))
+
+prices_2013_2019 <- 
+  read_excel( "prices_2013_2019.xlsx") %>% 
+  mutate(date = ymd(date))
+
+```
+
+### Combine to one tibble
+
+```{r}
+prices_2007_2019 <- 
+  prices_2007_2012 %>% 
+  bind_rows(prices_2013_2019)
+
+
+prices_2007_2019 %>% 
+  glimpse()
+```
+
+### Import volume data from csv
+
+Let's get data from a csv format. People love to email around csv's and excel files! 
+
+```{r}
+library(readr)
+volume_tibble <- 
+  read_csv("volume.csv") %>% 
+  mutate(date = ymd(date))
+
+#View(volume_tibble)
+  
+volume_tibble %>% 
+  slice(1)
+
+volume_tibble %>% 
+  colnames()
+```
+
+
+### Tidy versus wide data
+
+Same thing we talked about last time but it took me months to get comfortable with tidy versus non tidy data so I repeated the info again. 
+
+What is tidy data? Why is it valuable? 
+
+There are three interrelated rules which make a dataset tidy:
+
+    + Each variable must have its own column.
+    + Each observation must have its own row.
+    + Each value must have its own cell.
+    
+Simple definition of tidy data - it took Hadley years!
+    
+r4ds.had.co.nz/tidy-data.html
+
+Converting from wide to tidy is not intuitive. It takes practice and trial/error (at least, it took me a lot of practice and trial/error).
+
+
+### Let's wrangle
+
+Key functions:
+`gather()`, `spread()`, `group_by()`, `slice()`, `mutate()`, `select()`
+
+```{r}
+tidy_prices <-
+prices_2007_2019 %>% 
+  gather(symbol, price, -date) %>% 
+  group_by(symbol)
+
+tidy_prices %>% 
+  slice(1:3)
+```
+
+
+Notice how `slice(1:3)` grabbed the first 3 rows of each group, it respected our `group_by()`. I use this as a way to peek at the first few rows of each group, to make sure nothing weird jumps out at the beginning.
+
+```{r}
+
+tidy_volume <-
+volume_tibble %>% 
+  gather(symbol, volume, -date) %>% 
+  group_by(symbol)
+
+tidy_volume %>% 
+  slice(1:3)
+```
+
+We have price data and volume data in two separate tibbles. 
+
+Let's `join` them together into one data set. Have a quick look and notice they have common columns, `date` and `symbol`. We can join on those.
+
+```{r}
+
+price_volume <- 
+tidy_prices %>% 
+  left_join(tidy_volume, by = c("date", "symbol"))
+
+price_volume %>% 
+  slice(1:3)
+
+# what if want to write this data back an excel file, because your colleague, boss, collaborator wants that format. 
+# Use this
+# library(writexl)
+# write_xlsx(price_volume, path = "price_volume.xlsx")
+```
+
+Note we combined data in two different ways: `bind_rows()` and `left_join`. Those two techniques can solve a lot of issues. Think about how they're different.
+
+### Get all this data from the good'ol internet
+
+We can get all this data from the internet. 
+
+```{r}
+symbols <- c("TLT", "AGG", "SPY", "EEM", "UUP", "VNQ", "IJS")
+```
+
+The `tidyquant` package has a great function called `tq_get()` that allows to get data from a lot of sources. 
+
+```{r}
+tq_get_options()
+```
+
+https://cran.r-project.org/web/packages/tidyquant/vignettes/TQ01-core-functions-in-tidyquant.html#get-quantitative-data
+
+```{r}
+price_volume_from_internet <- 
+  symbols %>% 
+  tq_get(get = "stock.prices", from = "2007-03-01")
+
+price_volume_from_internet %>% 
+  head()
+```
+
+```{r}
+price_volume_from_internet %>% 
+  select(date, symbol, close, volume)
+```
+
+Wow, with the built `tq_get()` function and `select()` it was a lot easier to get this data. Why did we go through the pain of importing excel spreadsheets and then combining them?  In industry, it's rare to be able to download data from internet. Usually we get emailed a csv, or directed to a shared directory. Or if we're lucky, we get to access a data base. (Note: sometimes we control our own luck, if you're interviewing and get to meet some other quants, ask how they get their hands on data. How long does it take? etc)
+
+
+### Review Data Visualization
+
+Not going to review this again but just in case it's useful...
+
+Let's start with `ggplot2`
+
+A little background
+
+    + part of the tidyverse and works well with tidy data
+    + grammar of graphics
+    + most popular data vis package
+    + layers and geoms
+    + my strong opinion: skip learning base R visualization tools :) 
+    
+Why visualize now? All we did was import some data: 
+
+   + find errors or missing data now
+   + start getting to know our data
+   
+Let's create a line chart of prices, first on one chart, then with an individual panel for each symbol.
+
+```{r}
+price_volume %>%
+  ggplot(aes(x = date, y = price, color = symbol)) +
+  geom_line() +
+  #theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  facet_wrap(~symbol, scales = "free")
+```
+
+```{r}
+price_volume %>% 
+  ggplot(aes(x = date, y = volume, color = symbol)) +
+  geom_line() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  facet_wrap(~symbol, scales = "free")
+```
+
+How about a scatter plot?
+
+```{r}
+price_volume %>%
+  ggplot(aes(x = volume, y = price, color = symbol)) +
+ # ggplot(aes(x = date, y = price, color = symbol)) +
+  geom_point() +
+ theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  facet_wrap(~symbol, scales = "free")
+```
+
+### Review Interactve charting with plotly
+
+The magical `ggplotly()` function makes it fast to get started with plotly. We can convert our `ggplots` to interactive. Not perfect, but efficient.
+
+```{r}
+ggplotly(
+price_volume %>%
+  ggplot(aes(x = date, y = price, color = symbol)) +
+  geom_line() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))# +
+  #facet_wrap(~symbol, scales = "free")
+)
+```
+
+### Review Interactve charting with highcharter
+
+What is highcharter? An R package that wraps a javascript package - also called an html widget. 
+
+htmlwidgets.org - JavaScript libraries that have been ported to R. The ecosystem keeps growing and data visualization is becoming part of the skill stack.
+
+```{r}
+price_volume %>%
+  hchart(., hcaes(x = date, y = price, group = symbol),
+         type = "line") %>% 
+  hc_title(text = "Daily Prices") %>% 
+  hc_tooltip(pointFormat = "{point.symbol}: ${point.price: .2f}")
+```
+
+```{r}
+price_volume %>%
+  hchart(., hcaes(x = date, y = volume, group = symbol),
+         type = "line") %>% 
+  hc_title(text = "Daily Volumes") %>% 
+  hc_tooltip(pointFormat = "{point.symbol}: {point.volume}")
+```
+
+### Review Add labels to our data
+
+Create a new data frame with `tibble()` and peek at results with `slice()`. 
+
+```{r}
+labels <- 
+tibble(
+symbol = symbols,
+category = c("treas","bond", "US", "emerging", "currency", "RE", "small_cap")
+)
+
+price_volume_lbl <-
+price_volume %>% 
+  left_join(labels, by = "symbol") %>% 
+  group_by(symbol) %>% 
+  # summarise(vol = mean(volume))
+  mutate(vol_label = case_when(mean(volume) > 5000000 ~ "high volume", 
+                                TRUE ~ "low vol"))
+
+price_volume_lbl %>% 
+  slice(1)
+
+```
+
+So far, we have: 
+
+    + imported data from CSV and excel
+    + made sure the dates were in a good format
+    + coerced data in tidy format
+    + joined price volume
+    + added labels
+
+One more vis and let's use the tooltip to display our data
+
+```{r}
+price_volume_lbl %>% 
+  hchart(., hcaes(x = date, y = price, group = symbol, name = category),
+         type = "line") %>% 
+  hc_tooltip(headerFormat = "",
+    pointFormat = "Fund category: {point.name} <br>
+                   {point.symbol}: ${point.price: .2f} <br>
+                   daily volume: {point.volume}")
+```
+
+### Transform data from daily prices to daily returns
+
+Key functions: 
+`group_by()`, `mutate()`, `select()`, `slice()`, `filter()`
+
+Thus far, we've been tidying and joining, not transforming.  
+
+Let's create a new returns column, which we might want to model/predict, and new features that could be used in that modeling. We'll use the `mutate()` function for that. Probably the function I find myself using most frequently.
+
+Start with a simple transformation of daily prices to log returns. Not complicated but now we're changing this data, and that's an important step. 
+
+```{r}
+price_volume_lbl %>% 
+  group_by(symbol) %>% 
+  mutate(daily_returns = price/lag(price) - 1) %>%
+  select(date, symbol, daily_returns) %>% 
+  slice(1:2) 
+  # filter(symbol == "SPY")
+
+```
+
+
+```{r}
+funds_returns <- 
+  price_volume_lbl %>% 
+  mutate(daily_returns = price/lag(price) - 1) 
+```
+
+### Summarise the Stats
+
+How about data summarised? Here tidy data really comes in handy. We want to calculate the mean, sd, skewness and kurtosis of the daily returns of each of our funds, then plot them. We calculate with `summarise()`. Notice how this could scale out to 30 funds. It would be the same code.
+
+```{r}
+  funds_returns  %>% 
+  # calculate the mean return of each fund
+  #ungroup() %>% 
+  na.omit() %>% 
+  summarise(mean_return = mean(daily_returns),
+            sd_return = sd(daily_returns),
+            skew_return = skewness(daily_returns),
+            kurt_return = kurtosis(daily_returns),
+            p25 = quantile(daily_returns, probs = .25)) 
+```
+
+Now we can take those stats and plot them.
+
+```{r}
+  funds_returns  %>% 
+  # calculate the mean return of each fund
+  na.omit() %>% 
+  summarise(mean_return = mean(daily_returns),
+            sd_return = sd(daily_returns),
+            skew_return = skewness(daily_returns),
+            kurt_return = kurtosis(daily_returns),
+            p25 = quantile(daily_returns, probs = .25)) %>%
+  ggplot(aes(x = symbol, 
+             y = mean_return, 
+             fill = symbol, 
+             color = symbol, 
+             # add labels based on our original symbols vector
+             label = symbols)) +
+  # visualize as a column
+   geom_col(width = .4) +
+  # visalize with a point
+  #geom_point(size = 3) +
+  # Add text to the points
+  geom_text(nudge_y = 0.00003,
+            family = "Times New Roman") +
+  labs(y = "mean", x = "", title = "Mean return of ETFS") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  scale_y_continuous(labels = scales::percent,
+                     breaks = scales::pretty_breaks(10)) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+### Sometimes we need to untidy and get correlations
+
+Perhaps we want to look at correlation between asset returns - need to coerce back to a more matrixy
+
+```{r}
+library(corrr)
+funds_returns %>% 
+  select(date, symbol, daily_returns) %>% 
+  spread(symbol, daily_returns) %>%
+  select(-date) %>% 
+  correlate() %>% 
+  rearrange(absolute = FALSE) %>% 
+  shave() %>%
+  rplot(shape = 16, colours = c("red", "white", "cornflowerblue")) 
+  
+```
+
+### Fama French Data
+
+What if we wish to bring in data from outside source and mash it together with our data? Could be economic data or what's now called Alternative Data, non market, non econ data. Either way, it's data from a different source, probably in a weird format. We need to import it, then get it into shape to be used with our other data. Very often that will mean coercing dates into a common format. We will work with Fama French data, which is hosted on their website in zipped csv files.
+
+Fama French 5-factor data set. Good example of importing zipped data, then transforming the date format so the data can be joined with our asset returns data. Joining by date is very common in finance and unless we get lucky, the date columns will often be in different formats.
+
+     + Fama French 5 factors
+     + Import zip file, unzip, read in the csv
+     
+### Zip files and loading them
+
+*spoiler alert*: you'll need to be able to do this for your first assignment
+
+We can click and download the zip, load the csv and read it with `read_csv()`. Or we can use `unz`.
+
+```{r}
+# Homepage URL: 
+# http://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html#Research
+
+factors_data_address <- 
+"http://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/Global_5_Factors_Daily_CSV.zip"
+
+# factors_csv_name <- "Global_5_Factors_Daily.csv"
+
+temp <- tempfile()
+
+download.file(
+  # location of file to be downloaded
+  factors_data_address,
+  # where we want R to store that file
+  temp,
+  mode = "wb", 
+  quiet = TRUE)
+
+# Look at your files and notice the csv will appear there. We just grabbed it from the internet.
+files <- unzip(temp, list = TRUE)
+
+csv_file <- files$Name
+
+
+Global_5_Factors_Daily <- 
+  read_csv(csv_file, 
+    col_types = cols(X1 = col_date(format = "%Y%m%d")), 
+    skip = 6) %>% 
+  rename(date = X1, MKT = `Mkt-RF`) %>%
+  mutate_if(is.numeric, funs(. / 100)) %>% 
+  select(-RF)
+
+#View(Global_5_Factors_Daily)
+
+
+Global_5_Factors_Daily %>% 
+  tail()
+```
+
+
+    
+
+We have a column called date, just as we do in our `prices_volume_lbl` tibble. Let's join!
+
+```{r}
+funds_ff_joined <-
+funds_returns %>% 
+  left_join(Global_5_Factors_Daily, by = "date") %>% 
+  group_by(symbol)
+
+funds_ff_joined %>% 
+  tail()
+
+# FF have updated their data only as of January 31, 2019
+funds_ff_joined %>% 
+  filter(MKT != "NA") %>% 
+  tail()
+
+# Let's remove them with the almighty na.omit()
+
+funds_ff_joined <-
+funds_returns %>% 
+  left_join(Global_5_Factors_Daily, by = "date") %>% 
+  na.omit()
+
+# One more sanity check, look at first and last row for each fund
+funds_ff_joined %>% 
+  slice(1, n())
+```
+
+### Getting our data ready for modeling
+
+Of note, we will add only one line to differentiate between training and testing data sets, and that's a date partition. I do this step last to ensure exact same treatment.
+
+```{r}
+
+
+funds_train <- 
+funds_ff_joined %>% 
+  filter(date <= "2017-12-31")
+
+save(funds_train, file = "funds_ff_train.RData")
+
+funds_test <- 
+funds_ff_joined %>% 
+  # to create test, we change `<=` to `>`
+  filter(date > "2017-12-31")
+
+save(funds_test, file = "funds_test.RData")
+
+```
+
+
+### Add Future Values
+
+Is our hypothesis that these factors/columns/features are predictive or explanatory?  
+
+If predictive, let's add a future return to our variables: 
+
+
+```{r}
+funds_ff_train_future_returns <-
+funds_train %>% 
+  mutate(tomorrow_returns = lead(daily_returns, 1))
+
+funds_ff_test_future_returns<-
+funds_test %>% 
+  mutate(tomorrow_returns = lead(daily_returns, 1))
+```
+
+### Classic Linear Regression
+
+Let's regress one fund on some factors - this is the classic method for running a model in R.
+
+
+```{r}
+
+model_regression <- 
+  lm(tomorrow_returns ~ MKT + SMB + HML, data = funds_ff_train_future_returns) 
+
+model_regression
+```
+
+Hard to pull information out of that. The `broom` package helps us clean up the results. 
+
+```{r}
+tidy(model_regression, conf.int = T)
+```
+
+```{r}
+glance(model_regression)
+```
+
+
+```{r}
+augment(model_regression)
+```
+
+Making a prediction onour test data
+
+```{r}
+predictions <-
+predict(model_regression, funds_ff_test_future_returns)
+
+predictions %>% 
+  head()
+```
+
+### Let's get functional! 
+
+We can think of our linear model as a function and star to explore R as a functional programming language.
+
+"Importantly, R is a functional programming (FP) language. This means that it provides many tools for the creation and manipulation of functions. In particular, R has first-class functions. This means that one can do anything with functions that one can do with data structures, including [i] assigning them to variables, [ii] storing them in lists, [iii] passing them as arguments to other functions, [iv] creating them inside functions, and [v] returning them as the result of a function.
+
+Functional programming simply uses functions as arguments in other functions. It is typically an alternative to for loops and preferable when for loops obscure the purpose of code by displaying repetitive standard procedures. For example, if a macro trading strategy requires a special way of transforming market or macroeconomic data and if that transformation has been captured in a function, this transformation can be applied efficiently and with little code to all relevant data collections.
+
+In particular, a functional is a function that takes another function as an argument. Functionals make code more succinct. As a rule, functionals are preferable to explicit “for loops” because they express a high-level goal clearly. Functionals reduce bugs in by better communicating intent. Most importantly, functionals implemented in base R are well tested and efficient, because they’re used by so many people."
+
+http://www.sr-sv.com/the-power-of-r-for-trading-part-1/
+
+```{r}
+funds_ff_train_future_returns %>% 
+  ungroup() %>% 
+  nest()
+```
+
+```{r}
+funds_ff_train_future_returns %>% 
+  ungroup() %>% 
+  nest() %>% 
+  mutate(fit = map(data, ~ lm(tomorrow_returns ~ MKT + SMB + HML, data = .)),
+         tidied = map(fit, tidy),
+         glanced = map(fit, glance),
+         augmented = map(fit, augment))
+```
+
+
+
+```{r}
+funds_ff_train_future_returns %>% 
+  ungroup() %>% 
+  nest() %>% 
+  mutate(fit = map(data, ~ lm(tomorrow_returns ~ MKT + SMB + HML, data = .)),
+         tidied = map(fit, tidy),
+         glanced = map(fit, glance),
+         augmented = map(fit, augment)) %>% 
+  unnest(tidied)
+```
+
+### Straight to ggplot
+
+```{r}
+funds_ff_train_future_returns %>% 
+  ungroup() %>% 
+  nest() %>% 
+  mutate(fit = map(data, ~ lm(tomorrow_returns ~ MKT + SMB + HML, data = .)),
+         tidied = map(fit, tidy),
+         glanced = map(fit, glance),
+         augmented = map(fit, augment)) %>% 
+  unnest(augmented) %>% 
+  ggplot(aes(y = .resid, x = .fitted)) +
+  geom_point(color = "purple")
+```
+
+How to make predictions of the test data with functional programming. First we use a combination of `map` and `predict`.
+
+```{r}
+funds_ff_train_future_returns %>%
+  ungroup() %>% 
+  nest() %>% 
+  mutate(fit = map(data, ~ lm(tomorrow_returns ~ MKT + SMB + HML, data = .)),
+         tidied = map(fit, tidy),
+         glanced = map(fit, glance),
+         augmented = map(fit, augment),
+         pred = map(fit, ~ predict(., funds_ff_test_future_returns)))
+```
+
+Then `unnest()` the resulting column.
+
+```{r}
+funds_ff_train_future_returns %>%
+  ungroup() %>% 
+  nest() %>% 
+  mutate(fit = map(data, ~ lm(tomorrow_returns ~ MKT + SMB + HML, data = .)),
+         tidied = map(fit, tidy),
+         glanced = map(fit, glance),
+         augmented = map(fit, augment),
+         pred = map(fit, ~ predict(., funds_ff_test_future_returns))) %>% 
+  unnest(pred) 
+```
+
+Add back our actual data from `funds_ff_test_future_returns`.
+
+```{r}
+funds_ff_train_future_returns %>%
+  ungroup() %>% 
+  nest() %>% 
+  mutate(fit = map(data, ~ lm(tomorrow_returns ~ MKT + SMB + HML, data = .)),
+         tidied = map(fit, tidy),
+         glanced = map(fit, glance),
+         augmented = map(fit, augment),
+         pred = map(fit, ~ predict(., funds_ff_test_future_returns))) %>% 
+  unnest(pred) %>% 
+  add_column(actual = funds_ff_test_future_returns$tomorrow_returns,
+             date = funds_ff_test_future_returns$date) 
+```
+
+Pipe straight to `ggplot`.
+ 
+```{r}
+funds_ff_train_future_returns %>%
+  ungroup() %>% 
+  nest() %>% 
+  mutate(fit = map(data, ~ lm(tomorrow_returns ~ MKT + SMB + HML, data = .)),
+         tidied = map(fit, tidy),
+         glanced = map(fit, glance),
+         augmented = map(fit, augment),
+         pred = map(fit, ~ predict(., funds_ff_test_future_returns))) %>% 
+  unnest(pred) %>% 
+  add_column(actual = funds_ff_test_future_returns$tomorrow_returns,
+             date = funds_ff_test_future_returns$date) %>% 
+  gather(type, value, -date) %>% 
+  ggplot(aes(x = date, y = value, color = type)) +
+  geom_line() +
+  labs(title = "actual versus predicted")
+```
+
+
+### Logistic Regression
+
+First we need to add a binary outcome to our data. Let's create a column that is 'pos' and 'neg' depending on that day's returns.
+
+```{r}
+
+funds_ff_train_future_returns_binary <- 
+  funds_ff_train_future_returns %>% 
+  #filter(symbol == "EEM") %>%
+  mutate(pos_neg = if_else(tomorrow_returns > 0, "pos", "neg"),
+         pos_neg = factor(pos_neg), 
+         pos_neg = relevel(pos_neg, "neg"))
+
+funds_ff_test_future_returns_binary <- 
+  funds_ff_train_future_returns %>% 
+  #filter(symbol == "EEM") %>%
+  mutate(pos_neg = if_else(tomorrow_returns > 0, "pos", "neg"),
+         pos_neg = factor(pos_neg), 
+         pos_neg = relevel(pos_neg, "neg"))
+```
+
+### Classical logistical regression
+
+
+```{r}
+log_model_3_factor <- 
+  glm(pos_neg ~ MKT + SMB + HML, family = "binomial", data = funds_ff_train_future_returns_binary)
+
+log_model_3_factor
+```
+### Run through the same pipeline for modeling
+
+```{r}
+funds_ff_train_future_returns_binary %>% 
+  ungroup() %>% 
+  nest() %>% 
+  mutate(fit = map(data, ~ glm(pos_neg ~ MKT + SMB + HML, family = "binomial", data = .)),
+         tidied = map(fit, tidy),
+         glanced = map(fit, glance),
+         augmented = map(fit, augment)) %>% 
+  unnest(augmented) 
+```
+
+
+```{r}
+funds_ff_train_future_returns_binary %>% 
+  ungroup() %>% 
+  nest() %>% 
+  mutate(fit = map(data, ~ glm(pos_neg ~ MKT + SMB + HML, family = "binomial", data = .)),
+         tidied = map(fit, tidy),
+         glanced = map(fit, glance),
+         augmented = map(fit, augment)) %>% 
+  unnest(augmented) %>%  
+  mutate(index = 1:n()) %>% 
+  ggplot(aes(index, .std.resid, color = pos_neg)) + 
+  geom_point(alpha = .5)
+```
+
+High residuals. Our model isn't very good - which isn't surprising. We are trying to model positive or negative returns.
+
+How well does our model help to predict that test data we held out? 
+
+```{r}
+test_predictions <- 
+  predict(log_model_3_factor, newdata = funds_ff_test_future_returns_binary, type = "response") %>% 
+  enframe() %>% 
+  mutate(actual = funds_ff_test_future_returns_binary$pos_neg)
+
+
+test_predictions
+
+table(test_predictions$actual, test_predictions$value > 0.5) %>% 
+  prop.table() %>% 
+  round(3)
+```
+
+How good was our model? Pretty much a coin flip.

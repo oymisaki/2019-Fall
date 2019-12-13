@@ -1,0 +1,229 @@
+---
+title: "R Notebook"
+output: html_document
+---
+
+## The variables 
+Interested variables are shown below. 
+
+The first group of variables are from Altman Z-score, the variables interested are:
+
++ Working capital/Total assets. Expect negative sign, as a higher proportion of working capital lowers the probability of default.
++ retained earnings/Total assets. Expect negative sign, higher retained earnings means better condition of the company, thus lower probability of default.
++ Earning before interest & tax/Total assets. Expect negative sign, higher earnings predicts better operation of the company as well, thus lower probability of default.
++ Market value of equity/Total liabilities. Expect negative sign. High market value of equity means a positive expectation from the stock market, thus lower probability of default. 
++ Sales/Total assets. Expect negative sign, better sales means better cash flow and operation condition of the company, thus lower probability of default.
+
+The second group of variables are from Ohlson O-score, the variables interested are:
+
++ log(Total assets). Expect negative sign, company with higher assets has lower probability of default. 
++ Total liabilities/Total assets. Expect positive sign, higher liabilities leads to higher probability of default.
++ Working capital/Total assets. Expect negative sign, as a higher proportion of working capital lowers the probability of default.
++ Current liabilities/Current assets. Expect positive sign, higher current liabilities puts higher pressure on the cash flow of companies, thus have higher probability of default.
++ Net income/Total assets. Expect negative sign, higher net income predicts better operation condition, thus have lower probability of default.
++ Funds from operations/Total liabilities. Expect negative sign, higher funds from operations predicts a better operation condition, thus have lower probability of default. 
+
+The third group of variables are from dfs data:
+
++ sigmae. Expect positive sign, higher sigma of equity leads to higher probability of default. 
++ annret. Expect negative sign, higher annret of the stock means a positive reflection of the past performance of the company, thus has a lower probability of default.
+
+The fourth group of variables are fromfinancial statement:
+
++ quick ratio. Expect negative sign, higher quick ratio means company has more cash to pay back current liabilities, thus has a lower probability of default.
++ ROA. Expect negative sign, indicator of the performance of the company, thus has lower probability of default.
++ ROE. Expect negative sign, indicator of the performance of the company, thus has lower probability of default.
++ ROS. Expect negative sign, indicator of the performance of the company, thus has lower probability of default.
++ leverage ratio. Expect positive sign, the same as debt ratio.
+
+```{r, echo=FALSE}
+library(tidyverse)
+library(data.table)
+library(ROCR)
+library(gains)
+```
+
+## Import data
+
+The dsf and funda data are preprocessed using sas.
+
+```{r, echo=FALSE}
+
+sub_dsf <- read_csv("~/Hazard Model/sub_dsf.csv")
+sub_funda <- read_csv("~/Hazard Model/sub_funda.csv")
+
+sub_dsf = sub_dsf %>% 
+  mutate(CUSIP = str_sub(CUSIP, 1, 6)) %>%
+  glimpse()
+sub_funda = sub_funda %>%
+  mutate(CUSIP = str_sub(CUSIP, 1, 6)) %>%
+  glimpse()
+
+
+
+temp <- merge(sub_dsf, sub_funda, by = c("CUSIP", "year")) %>%
+  glimpse()
+temp = temp %>%
+  rename(permno = "PERMNO") %>%
+  glimpse()
+
+temp %>% glimpse()
+temp <- temp %>%
+  group_by(CUSIP, permno) %>%
+  mutate(year = lead(year))
+
+bankrup <- read_csv("~/Hazard Model/BR1962_2016.csv")
+bankrup <- bankrup %>% mutate(
+  year = year(bankruptcy_dt),
+  sign = 1
+  )
+bankrup <- bankrup[, -c(2)]
+
+dset <- left_join(temp, bankrup, by = c("permno", "year"))
+dset[is.na(dset$sign), "sign"] <- 0
+
+
+dset %>% glimpse()
+```
+
+## First Model
+
+Use the full set of variables to run the first regression.
+
+```{r}
+model = glm( sign ~sigmae + annret+ wcta +IB + reta + ebitta + salesta + logta + curliabca  + ROE + ROA + ROS+ lvg+
+               ic  + dr + qr + cr + logsales  + mvaat + tng + fndsfrmopertl + nita, family="binomial", data=dset)
+summary(model)
+```
+
+From the results, we can see that most of the variables has the sign as expected. Typically, with the variables that have significant level under 0.05, which are sigmae, annret, ebitta(ebit over total assets) and mvaat(market value of equity over total assets), they have signs as expected.
+
+## Second Model
+
+Iterate the above model selection step and run a selected model.
+
+According the last regresion, choose a selected set of variables to run the regression. 
+```{r}
+model_selected = glm(sign ~sigmae + annret+ wcta + reta + ebitta + salesta + logta + curliabca+
+               qr + mvaat + fndsfrmopertl, family="binomial", data=dset)
+summary(model_selected)
+
+anova(model_selected)
+```
+
+
+## Out-of-sample test using method 1
+
+```{r}
+training = dset %>%
+  filter(year <= 1990)
+training[training$sign == 1, ]
+
+forecast = dset %>%
+  filter(year > 1990)
+
+train_model = glm(sign ~ sigmae + annret+ wcta + reta + ebitta + salesta + logta + curliabca+
+               qr  + fndsfrmopertl, family="binomial", data=training)
+
+test_data = dset %>%
+  filter(year > 1990) %>%
+  select(sigmae, annret, wcta , reta , ebitta , salesta , logta , curliabca,
+               qr , fndsfrmopertl)
+
+res <- predict(train_model, test_data, type="response")
+res = as.vector(res)
+predict <- gains(forecast$sign, res, groups=10, percents=TRUE)
+print(predict)
+
+pred <- prediction(res, forecast$sign)
+perf <- performance(pred, "auc")
+print(perf@y.values)
+
+perf <- performance(pred, "tpr", "fpr")
+plot(perf)
+```
+Ths AUC is 0.85.
+
+## Out-of-sample test using method 2
+```{r}
+
+res = c()
+for(i in 1990:2015)
+{
+  train = dset %>%
+    filter(year <= i)
+  
+  forecast = dset %>%
+    filter(year == i+1)
+  
+  train_model = glm(sign ~ sigmae + annret+ wcta + reta + ebitta + salesta + logta + curliabca+
+               qr  + fndsfrmopertl, family="binomial", data=train)
+  
+  test_data = forecast %>%
+      select(sigmae, annret, wcta , reta , ebitta , salesta , logta , curliabca,
+               qr , fndsfrmopertl)
+  
+  res1 <- predict(train_model, test_data, type="response")
+  res1 = as.vector(res1)
+  res = c(res, res1)
+}
+
+
+res[is.na(res)] = 0
+forecast = dset %>%
+  filter(year > 1990) %>%
+  filter(year <= 2016)
+
+predict <- gains(forecast$sign, res, groups=10, percents=TRUE)
+print(predict)
+pred <- prediction(res, forecast$sign)
+perf <- performance(pred, "auc")
+print(perf@y.values)
+
+perf <- performance(pred, "tpr", "fpr")
+plot(perf)
+```
+
+
+
+## Out-of-sample test using method 3
+```{r}
+
+res = c()
+for(i in 1990:2015)
+{
+  train = dset %>%
+    filter(year <= i) %>%
+    filter(year >= i - 20)
+  
+  forecast = dset %>%
+    filter(year == i+1)
+  
+  train_model = glm(sign ~ sigmae + annret+ wcta + reta + ebitta + salesta + logta + curliabca+
+               qr  + fndsfrmopertl, family="binomial", data=train)
+  
+  test_data = forecast %>%
+    select(sigmae, annret, wcta , reta , ebitta , salesta , logta , curliabca,
+             qr , fndsfrmopertl)
+  
+  res1 <- predict(train_model, test_data, type="response")
+  res1 = as.vector(res1)
+  res = c(res, res1)
+}
+
+res[is.na(res)] = 0
+forecast = dset %>%
+  filter(year > 1990) %>%
+  filter(year <= 2016)
+
+predict <- gains(forecast$sign, res, groups=10, percents=TRUE)
+pred <- prediction(res, forecast$sign)
+perf <- performance(pred, "auc")
+print(perf@y.values)
+
+perf <- performance(pred, "tpr", "fpr")
+plot(perf)
+```
+
+
+

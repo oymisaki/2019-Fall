@@ -1,0 +1,187 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+Import library
+
+```{r}
+library(tidyverse)
+library(readr)
+getwd()
+```
+
+Download Zip files
+```{r}
+sec_data_address = "https://www.sec.gov/files/opa/data/market-structure/metrics-individual-security/individual_security_"
+
+for(year in 2012:2019){
+  quarters = c("q1", "q2", "q3", "q4")
+  if(year == 2012){
+    quarters = c("q10", "q2", "q3", "q4")
+  }
+  if(year == 2019){
+    quarters = c("q1", "q2")
+  }
+  for(q in quarters){
+    filename = paste(year, "_", q, ".zip", sep="")
+    download.file(
+    # location of file to be downloaded
+    paste(sec_data_address, filename, sep=""),
+    # where we want R to store that file
+    paste("./data/", filename, sep=""),
+    mode = "wb", 
+    quiet = TRUE)
+  }
+}
+```
+
+Unzip files
+```{r}
+setwd("./data")
+files = list.files()
+
+for(file in files){
+  file
+  unzip(file, exdir = "./")
+}
+```
+
+
+Read files
+```{r}
+rm(list = ls(all.names = TRUE))
+gc()
+
+files = list.files(path="./data", pattern = "*.csv")
+files
+
+data_list = list()
+for(file in files){
+    df_name = str_replace(file, "_all\\.csv", "")
+    
+    data_list[[df_name]] <- read_csv(str_c("./data/", file), 
+      col_types = cols(Date = col_date(format = ifelse(str_detect(file, "2016"),"%Y%m%d.0", "%Y%m%d"))))
+    
+    print(file)
+    
+    columns = colnames(data_list[[df_name]])
+    data_list[[df_name]]  = rename_at(data_list[[df_name]], vars(columns), ~str_replace(columns, "\\('000\\)", ""))  %>%
+      mutate(
+      Trade = LitTrades+TradesForHidden,
+      TradeVol=TradeVolForHidden+LitVol,
+      Cancel_to_Trade=ifelse(LitTrades!=0, Cancels/LitTrades, NaN),
+      Trade_to_Order_Volume=ifelse(OrderVol!=0, 100*LitVol/OrderVol, NaN),
+      Hidden_Rate=ifelse(TradesForHidden!=0, 100*Hidden/TradesForHidden, NaN),
+      Hidden_Volume=ifelse(TradeVolForHidden!=0, 100*HiddenVol/TradeVolForHidden, NaN),
+      OddLots_Rate=ifelse(TradesForOddLots!=0, 100*OddLots/TradesForOddLots, NaN),
+      OddLots_Volume=ifelse(TradeVolForOddLots!=0, 100*OddLotVol/TradeVolForOddLots, NaN)
+      )
+}
+
+total_data = bind_rows(data_list)
+# unique(data_list[["q1_2013"]]$Date)
+```
+
+```{r}
+
+total_stock <- total_data %>% filter(Security == "Stock") 
+total_etf <- total_data %>% filter(Security == "ETF")
+
+total_data = NULL
+gc()
+
+MeanStockTotal <- sapply(total_stock %>% select(-Date, -Security, -Ticker), mean, na.rm=TRUE)
+StdStockTotal <- sapply(total_stock %>% select(-Date, -Security, -Ticker), StdDev, na.rm=TRUE)
+P25StockTotal <- sapply(total_stock %>% select(-Date, -Security, -Ticker), function(x)quantile(x, .25, na.rm = TRUE))
+P50StockTotal <- sapply(total_stock %>% select(-Date, -Security, -Ticker), function(x)quantile(x, .50, na.rm = TRUE))
+P75StockTotal <- sapply(total_stock %>% select(-Date, -Security, -Ticker), function(x)quantile(x, .75, na.rm = TRUE))
+
+TotalStockStat = data.frame(MeanStockTotal, StdStockTotal, P25StockTotal, P50StockTotal, P75StockTotal)
+write.csv(TotalStockStat,'./out/TotalStockStat.csv')
+
+MeanETFTotal <- sapply(total_etf %>% select(-Date, -Security, -Ticker), mean, na.rm=TRUE)
+StdETFTotal <- sapply(total_etf %>% select(-Date, -Security, -Ticker), StdDev, na.rm=TRUE)
+P25ETFTotal <- sapply(total_etf %>% select(-Date, -Security, -Ticker), function(x)quantile(x, .25, na.rm = TRUE))
+P50ETFTotal <- sapply(total_etf %>% select(-Date, -Security, -Ticker), function(x)quantile(x, .50, na.rm = TRUE))
+P75ETFTotal <- sapply(total_etf %>% select(-Date, -Security, -Ticker), function(x)quantile(x, .75, na.rm = TRUE))
+TotalETFStat = data.frame(MeanETFTotal, StdETFTotal, P25ETFTotal, P50ETFTotal, P75ETFTotal)
+write.csv(TotalETFStat,'./out/TotalETFStat.csv')
+```
+
+Sampling
+```{r}
+stocks = data_list[["q1_2012"]] %>% filter(Security=="Stock")
+ETFs = data_list[["q1_2012"]] %>% filter(Security=="ETF")
+sample_stocks = stocks$Ticker %>% unique() %>% sample(size = 100)
+sample_ETFs = ETFs$Ticker %>% unique() %>% sample(size = 100)
+
+data_list[["q1_2012"]] %>% filter(Ticker %in% sample_ETFs) %>% glimpse()
+
+stock_sample_list = list()
+etf_sample_list = list()
+
+for(name in names(data_list)){
+  stock_sample_list[[name]] = data_list[[name]] %>% filter(Ticker %in% sample_stocks)
+  etf_sample_list[[name]] = data_list[[name]] %>% filter(Ticker %in% sample_ETFs)
+  print(name)
+}
+
+```
+
+gather sample
+```{r}
+total_sample_stock <- bind_rows(stock_sample_list)
+total_sample_etf <- bind_rows(etf_sample_list)
+```
+
+Calculate the statistics by date
+```{r}
+MeanStock100 <- total_sample_stock %>% group_by(Date) %>% summarise_if(is_numeric, mean, na.rm = TRUE) %>% glimpse()
+StdStock100 <- total_sample_stock %>% group_by(Date) %>% summarise_if(is_numeric, StdDev, na.rm = TRUE) %>% glimpse()
+P25Stock100 <- total_sample_stock %>% group_by(Date) %>% summarise_if(is_numeric, ~quantile(., .25, na.rm = TRUE), na.rm = TRUE) %>% glimpse()
+P50Stock100 <- total_sample_stock %>% group_by(Date) %>% summarise_if(is_numeric, ~quantile(., .50, na.rm = TRUE), na.rm = TRUE) %>% glimpse()
+P75Stock100 <- total_sample_stock %>% group_by(Date) %>% summarise_if(is_numeric, ~quantile(., .75, na.rm = TRUE), na.rm = TRUE) %>% glimpse()
+
+MeanETF100 <- total_sample_etf %>% group_by(Date) %>% summarise_if(is_numeric, mean, na.rm = TRUE) %>% glimpse()
+StdETF100 <- total_sample_etf %>% group_by(Date) %>% summarise_if(is_numeric, StdDev, na.rm = TRUE) %>% glimpse()
+P25ETF100 <- total_sample_etf %>% group_by(Date) %>% summarise_if(is_numeric, ~quantile(., .25, na.rm = TRUE), na.rm = TRUE) %>% glimpse()
+P50ETF100 <- total_sample_etf %>% group_by(Date) %>% summarise_if(is_numeric, ~quantile(., .50, na.rm = TRUE), na.rm = TRUE) %>% glimpse()
+P75ETF100 <- total_sample_etf %>% group_by(Date) %>% summarise_if(is_numeric, ~quantile(., .75, na.rm = TRUE), na.rm = TRUE) %>% glimpse()
+```
+
+plot and save
+```{r}
+plot_and_save <- function(df, filename){
+  PDFPath = str_c("./out/", filename)
+  pdf(file=PDFPath)  
+
+  for (name in colnames(df))   
+  {   
+    print(ggplot(data = df) + 
+    geom_line(mapping = aes_string(x = "Date", y = name))) + 
+  } 
+  dev.off() 
+}
+
+plot_and_save(MeanStock100, "MeanStock100.pdf")
+plot_and_save(StdStock100, "StdStock100.pdf")
+plot_and_save(P25Stock100, "P25Stock100.pdf")
+plot_and_save(P50Stock100, "P50Stock100.pdf")
+plot_and_save(P75Stock100, "P75Stock100.pdf")
+plot_and_save(MeanETF100, "MeanETF100.pdf")
+plot_and_save(StdETF100, "StdETF100.pdf")
+plot_and_save(P25ETF100, "P25ETF100.pdf")
+plot_and_save(P50ETF100, "P50ETF100.pdf")
+plot_and_save(P75ETF100, "P75ETF100.pdf")
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

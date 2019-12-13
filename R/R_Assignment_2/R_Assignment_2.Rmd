@@ -1,0 +1,140 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+Define years
+```{r}
+years = c('1971', '1974', '1979', '1984', '1988', '1990', '1995', '1999', '2002', '2005', '2008', '2012', '2015', '2017')
+```
+
+Import data. The initial data set is too large to import into R on my laptop, so I pre-filter it and generate the needed variables in SAS, then export them into a new csv, which is "sub_funda.csv".
+
+```{r}
+library(tidyverse)
+library(vroom)
+library(lubridate)
+library(zoo)
+
+getwd()
+data = vroom('sub_funda.csv') %>% 
+  mutate(year = as.character(year)) %>%
+  glimpse()
+gdpdef = vroom('GDPDEF.csv') %>% 
+  mutate(gdpdef = GDPDEF_NBD19920101 / 100, year=str_sub(DATE, 0, 4)) %>%
+  select(year, gdpdef) %>%
+  glimpse()
+
+```
+
+Import gdpdef data to deflate related variables
+```{r}
+# deflate related variables
+funda_with_gdpdef <- data %>% 
+  merge(gdpdef, by='year') %>%
+  mutate_at(c('CH','IVST', 'RECT', 'INVT', 'ACO', 'ACT', 'PPENT', 'IVAEQ', 'IVAO', 'INTAN',  'AO', 'AT', 'DLC', 'AP', 'TXP', 'LCO', 'LCT', 'DLTT', 'LO' ,'TXDITC', 'MIB', 'LT', 'PSTK', 'CEQ', 'TEQ',
+	'DV', 'changing_working_capit', 'investment', 'internal_cf', 'fin_deficit', 'net_debt_issued', 'net_equity_issued', 'total_net_ext_fin',
+	'SSTK', 'PRSTKC', 'DV','DLTIS', 'DLTR', 'DLCCH', 'FIAO', 'FINCF', 'EXRE', 'CHECH', 'FSRCO', 'FUSEO', 'WCAPC',
+	'book_value_debt', 'cap_investment', 'DLTR', 'SSTK', 'PRSTKC'), funs(./gdpdef))
+  
+# calculate stats
+report_stat_funda_with_gdpdef <- funda_with_gdpdef %>%
+  filter(year %in% years) %>% 
+  group_by(year) %>% 
+  summarise_all(list(function(x)mean(x,na.rm= T), function(x)sd(x,na.rm= T), function(x)quantile(x, .25,na.rm= T), function(x)quantile(x, .50,na.rm= T), function(x)quantile(x, .75,na.rm= T))) %>% 
+  gather(-year, key='var_name', value="value") %>%
+  spread(key='var_name', value='value') %>%
+  rename_at(vars(ends_with("fn1")), funs(str_replace(., "fn1", "mean")))%>%
+  rename_at(vars(ends_with("fn2")), funs(str_replace(., "fn2", "std")))%>%
+  rename_at(vars(ends_with("fn3")), funs(str_replace(., "fn3", "p25")))%>%
+  rename_at(vars(ends_with("fn4")), funs(str_replace(., "fn4", "p50")))%>%
+  rename_at(vars(ends_with("fn5")), funs(str_replace(., "fn5", "p75")))%>%
+  glimpse()
+           
+write.csv(report_stat_funda_with_gdpdef,'out/report_stat_funda.csv')
+
+```
+
+```{r}
+# generate table 10
+
+table_10 <- data %>%
+  select(c('div_over_na', 'investment_over_na', 'changing_working_capit_over_na', 
+	'internal_cf_over_na', 'fin_deficit_over_na', 'DLTIS_over_na',
+	'net_debt_issued_over_na', 'net_equity_issued_over_na', 'total_net_ext_fin_over_na', 
+	'book_leverage', 'Tangibility', 'market_value_assets_at', 'logsales', 'Profitability')) %>%
+  na.omit() %>%
+  cor() %>%
+  print()
+
+write.csv(table_10,'out/table_10.csv')
+```
+
+```{r}
+funda_with_gdpdef_mean <- funda_with_gdpdef %>%
+  group_by(year) %>%
+  summarise_all(function(x)mean(x,na.rm= T)) %>%
+  mutate(date = ymd(str_c(year, "-01-01"))) %>%
+  glimpse()
+
+# plot using a function and then save to pdf 
+plot_and_save <- function(df, filename, plot_fun){
+  PDFPath = str_c("./out/", filename)
+  pdf(file=PDFPath)  
+
+  for (name in colnames(df))   
+  {   
+    print(plot_fun(df, name)) 
+  } 
+  dev.off() 
+}
+
+# line plot
+plot_and_save(funda_with_gdpdef_mean %>% select(-year), 'funda_line_plot.pdf', function(df, name)ggplot(data = df) + 
+    geom_line(mapping = aes_string(x = "date", y = name)))
+# box plot
+plot_and_save(funda_with_gdpdef %>% filter(year %in% years)%>% mutate(factor_date = as.factor(year)) %>% select(-year) , 'funda_box_plot.pdf', function(df, name)ggplot(data = df, aes_string(x="factor_date", y = name)) + 
+    geom_boxplot())
+```
+
+```{r}
+
+# this function plots both first and secondary axis
+plot_overlay <- function(inp_data, col1, col2)
+{
+  par(mar = c(5, 4, 4, 4) + 0.3)  # Leave space for z axis
+  plot(inp_data[['date']], inp_data[[col1]], type = "l",xlab = "date", ylab = col1) # first plot
+  par(new = TRUE)
+  plot(inp_data[['date']], inp_data[[col2]], type = "l", col='red', axes = FALSE, bty = "n", xlab = "", ylab="")
+  axis(side=4)
+  mtext(col2, side=4, line=3)
+  legend("topleft",legend=c(col1, col2),
+    text.col=c("black","red"),lty=1:1, col=c("black","red"))
+}
+
+# import BAAFFM data
+BAAFFM = vroom('BAAFFM.csv') %>%
+  rename(date=DATE) %>%
+  mutate(BAAFFM = as.double(BAAFFM)) %>%
+  glimpse()
+
+
+funda_with_baaffm <- merge(BAAFFM, funda_with_gdpdef_mean, by='date') %>%
+  glimpse()
+
+plot_and_save(funda_with_baaffm%>%select(-c(year)), 'funda_with_baaffm.pdf', function(df, name)plot_overlay(df, name, "BAAFFM"))
+```
+
+```{r}
+CFSI = vroom('CFSI.csv') %>%
+  rename(date=DATE) %>%
+  mutate( CFSI = as.double(CFSI)) %>%
+  glimpse()
+
+funda_with_cfsi <- merge(CFSI, funda_with_gdpdef_mean, by='date') %>%
+  glimpse()
+
+plot_and_save(funda_with_cfsi%>%select(-c(year)), 'funda_with_cfsi.pdf', function(df, name)plot_overlay(df, name, "CFSI"))
+```
+
+
+

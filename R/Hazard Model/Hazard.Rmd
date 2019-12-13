@@ -1,0 +1,130 @@
+---
+title: "hazard"
+author: "Mingji Li"
+date: "11/2/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(data.table)
+library(ROCR)
+library(gains)
+```
+
+```{r}
+# dsf <- read_csv("dsf.csv")
+# dsf[dsf == "C"] <- NA
+# dsf <- na.omit(dsf)
+# funda <- read_csv("funda.csv")
+# setDT(dsf)
+# setnames(dsf, colnames(dsf), tolower(colnames(dsf)))
+#dsf[, shrout := shrout * 1000]
+#dsf[, E := abs(prc) * shrout]
+# dsf[, year := year(as.Date(date, format = "%m/%d/%Y"))]
+# asf = dsf[, .(annret = exp(sum(log(1+as.numeric(ret))))-1, sigmae = sd(as.numeric(ret))*sqrt(250), permno = first(permno)), by = .(cusip, year)]
+# write.csv(asf, file = "asf.csv")
+
+# setDT(funda)
+# setnames(funda, colnames(funda), tolower(colnames(funda)))
+# asf$year = as.double(asf$year)
+# asf$cusip = as.character(asf$cusip)
+# temp <- inner_join(asf, funda, by = c("cusip", "year"))
+# 
+# bankrup <- read_csv("BR1962_2016.csv")
+# bankrup <- bankrup %>% mutate(
+#   year = year(bankruptcy_dt),
+#   sign = 1
+#   )
+# bankrup <- bankrup[, -c(2)]
+# 
+# dset <- left_join(temp, bankrup, by = c("permno", "year"))
+# dset[is.na(dset$sign), "sign"] <- 0
+dset <- read_csv("dset.csv")
+```
+
+```{r correlation}
+cor_dset <- dset[, c(6:21)]
+correlation <- cor(na.omit(cor_dset))
+print(correlation)
+```
+
+```{r in-sample}
+model <- glm(sign ~ annret + sigmae + size + liabilityasset_ratio + netincomeasset_ratio + current_ratio + quick_ratio + debtequity_ratio + asset_turnover + receivable_turnover + inventory_turnover + leverage + interestburden + roa + roe + ros + marketbook_ratio + tangibility, data = dset, family = "binomial")
+summary(model)
+
+model_selected <- glm(sign ~ annret + sigmae + size + liabilityasset_ratio + current_ratio + roa, data = dset, family = "binomial")
+summary(model_selected)
+
+anova(model, model_selected, test = "Chisq") #result shows that two models perform the same
+```
+
+```{r out-of-sample}
+#1st method
+training_set <- dset[dset$year <= 1990, ]
+forecast_set <- dset[dset$year > 1990, ]
+training_model <- glm(sign ~ annret + sigmae + size + liabilityasset_ratio + current_ratio + roa, data = training_set, family = "binomial")
+test_data <- dset[dset$year > 1990, c("annret", "sigmae", "size", "liabilityasset_ratio", "current_ratio", "roa")]
+res <- predict(training_model, test_data, type = "response")
+res = as.vector(res)
+res[is.na(res)] <- 0
+predict_result <- gains(forecast_set$sign, res, groups = 10, percents = TRUE)
+print(predict_result)
+pred <- prediction(res, forecast_set$sign)
+performance(pred, "auc")@y.values
+perf <- performance(pred, "tpr", "fpr")
+plot(perf)
+```
+
+```{r}
+#2nd method
+for(i in 1990:2015){
+  training_set <- dset[dset$year <= i, ]
+  forecast_set <- dset[dset$year == i+1, ]
+  training_model <- glm(sign ~ annret + sigmae + size + liabilityasset_ratio + current_ratio + roa, data = training_set, family = "binomial")
+  test_data <- forecast_set[, c("annret", "sigmae", "size", "liabilityasset_ratio", "current_ratio", "roa")]
+  res <- predict(training_model, test_data, type = "response")
+  res = as.vector(res)
+  res[is.na(res)] <- 0
+  predict_result <- gains(forecast_set$sign, res, groups = 10, percents = TRUE)
+  print(predict_result)
+  # pred <- prediction(res, forecast_set$sign)
+  # performance(pred, "auc")@y.values
+  # perf <- performance(pred, "tpr", "fpr")
+  # plot(perf)
+}
+```
+
+```{r}
+#3rd method
+for(i in 1990:2015){
+  training_set <- dset[dset$year <= i & dset$year >= i-20, ]
+  forecast_set <- dset[dset$year == i+1, ]
+  training_model <- glm(sign ~ annret + sigmae + size + liabilityasset_ratio + current_ratio + roa, data = training_set, family = "binomial")
+  test_data <- forecast_set[, c("annret", "sigmae", "size", "liabilityasset_ratio", "current_ratio", "roa")]
+  res <- predict(training_model, test_data, type = "response")
+  res = as.vector(res)
+  res[is.na(res)] <- 0
+  predict_result <- gains(forecast_set$sign, res, groups = 10, percents = TRUE)
+  print(predict_result)
+  pred <- prediction(res, forecast_set$sign)
+  performance(pred, "auc")@y.values
+  perf <- performance(pred, "prec", "rec")
+  plot(perf)
+}
+```
+
+
+
+
+
+
+
+
+

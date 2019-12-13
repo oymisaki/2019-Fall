@@ -1,0 +1,185 @@
+---
+title: "R_Assignment_3"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## import 
+```{r}
+library(vroom)
+library(haven)
+library(tidyverse)
+library(lubridate)
+library(lme4)
+library(plyr)
+gc()
+```
+
+## import data
+```{r}
+dsf = vroom('dsf.csv') %>% glimpse()
+```
+## 2. Summarise
+```{r}
+report_stat_dsf <- dsf %>%
+  select(-DATE, -HSICCD)  %>%
+  summarise_all(list(function(x)mean(x,na.rm= T), function(x)sd(x,na.rm= T), function(x)quantile(x, .25,na.rm= T), function(x)quantile(x, .50,na.rm= T), function(x)quantile(x, .75,na.rm= T))) %>% 
+  gather(key='var_name', value="value") %>%
+  spread(key='var_name', value='value') %>%
+  rename_at(vars(ends_with("fn1")), funs(str_replace(., "fn1", "mean")))%>%
+  rename_at(vars(ends_with("fn2")), funs(str_replace(., "fn2", "std")))%>%
+  rename_at(vars(ends_with("fn3")), funs(str_replace(., "fn3", "p25")))%>%
+  rename_at(vars(ends_with("fn4")), funs(str_replace(., "fn4", "p50")))%>%
+  rename_at(vars(ends_with("fn5")), funs(str_replace(., "fn5", "p75")))%>%
+  glimpse()
+```
+
+## 3. (a) Compute average return over time
+```{r}
+
+report_daily_stat_dsf <- dsf %>%
+  select(-HSICCD) %>%
+  group_by(DATE)  %>%
+  summarise_all(list(function(x)mean(x,na.rm= T), function(x)sd(x,na.rm= T), function(x)quantile(x, .25,na.rm= T), function(x)quantile(x, .50,na.rm= T), function(x)quantile(x, .75,na.rm= T))) %>% 
+  gather(-DATE, key='var_name', value="value") %>%
+  spread(key='var_name', value='value') %>%
+  rename_at(vars(ends_with("fn1")), funs(str_replace(., "fn1", "mean")))%>%
+  rename_at(vars(ends_with("fn2")), funs(str_replace(., "fn2", "std")))%>%
+  rename_at(vars(ends_with("fn3")), funs(str_replace(., "fn3", "p25")))%>%
+  rename_at(vars(ends_with("fn4")), funs(str_replace(., "fn4", "p50")))%>%
+  rename_at(vars(ends_with("fn5")), funs(str_replace(., "fn5", "p75")))%>%
+  glimpse()
+```
+
+## 3. (b) Compute average return over time
+
+- From the daily mean spread, we can see a trend of increasing
+- From the volume standard deviation, we can see a rise near 2008
+- Price mean have a large drop in 2008, Price p25 even has a larger drop
+
+```{r}
+report_daily_stat_dsf = report_daily_stat_dsf %>% mutate(date=dmy(DATE)) %>% na.omit()%>%glimpse() 
+for (name in colnames(report_daily_stat_dsf)[2:21])   
+  {   
+    print(ggplot(data = report_daily_stat_dsf, aes_string(x="date", y = name)) + geom_line())
+  } 
+```
+
+## 4. Regression CAPM
+### Import market return data 
+```{r}
+
+dsi = read_sas('dsi.sas7bdat') %>% 
+  filter(date > ymd("2003-12-31")) %>%
+  filter(date < ymd("2019-01-01")) %>%
+  glimpse()
+
+dsf_rmt = dsf %>% mutate(date=dmy(DATE)) %>% select(-DATE) %>% merge(dsi, by="date")
+dsf_rmt %>% glimpse()
+```
+
+## Reg over all the security
+
+```{r}
+dsf = NULL
+gc()
+
+reg_results = lmList(RET ~ EWRETX | HSICCD, data=dsf_rmt)
+
+reg_results %>% glimpse()
+reg_results[1] %>% glimpse()
+```
+
+## Calculate Volitility
+```{r}
+
+get_vol <- function(reg){
+  model = reg$model
+  coef = reg$coefficients
+  total_vol = sd(model$RET, na.rm = TRUE)
+  system_vol = sd(coef["EWRETX"] * model$EWRETX, na.rm=TRUE)
+  idio_vol = sd(reg$residuals, na.rm=TRUE)
+  l = list()
+  l['system_vol'] = system_vol
+  l['total_vol'] = total_vol
+  l['idio_vol'] = idio_vol
+  l
+}
+
+
+vol_results =  lapply(reg_results, get_vol)
+```
+
+## 3(d) sort by system vol and calculate performance
+
+
+```{r}
+vol_df <- ldply (vol_results, data.frame) %>% rename(c('.id' = 'HSICCD')) %>% mutate(HSICCD = as.double(HSICCD))  %>% glimpse()
+
+system_vol_df <- vol_df %>% arrange(system_vol) %>% glimpse()
+
+top_q20 = system_vol_df %>% slice(1:(918 / 5)) %>% glimpse()
+tail_q20 = system_vol_df %>% slice((918 * 0.8):918) %>% glimpse()
+
+system_vol_portfolio_ret = dsf_rmt %>% 
+  select(RET, date, HSICCD) %>%
+  merge(top_q20, by="HSICCD") %>%
+  group_by(date) %>% 
+  summarise_at(vars(RET), funs(mean(., na.rm=TRUE))) %>%
+  merge(dsf_rmt %>% 
+      select(RET, date, HSICCD) %>%
+      merge(tail_q20, by="HSICCD") %>%
+      group_by(date) %>% 
+      summarise_at(vars(RET), funs(mean(., na.rm=TRUE))), by="date") %>%
+  glimpse()
+
+system_vol_portfolio_ret %>%
+  mutate(port_ret = RET.x - RET.y) %>%
+  summarise_at(vars(port_ret), funs(mean(., na.rm=TRUE), sd(., na.rm=TRUE))) %>%
+  glimpse()
+```
+- The quintile porfolio (sorting over systematic volitility)'s return is shown above  
+- When the quintile porfolio is formed by sorting over systematic volitility we have mean daily return of 0.00038
+- That means we have a averagely positive return every day.
+
+
+## 3(e) sort by idio vol and calculate performance
+```{r}
+idio_vol_df <- vol_df %>% arrange(idio_vol) %>% glimpse()
+
+top_q20 = idio_vol_df %>% slice(1:(918 / 5)) %>% glimpse()
+tail_q20 = idio_vol_df %>% slice((918 * 0.8):918) %>% glimpse()
+
+idio_vol_portfolio_ret = dsf_rmt %>% 
+  select(RET, date, HSICCD) %>%
+  merge(top_q20, by="HSICCD") %>%
+  group_by(date) %>% 
+  summarise_at(vars(RET), funs(mean(., na.rm=TRUE))) %>%
+  merge(dsf_rmt %>% 
+      select(RET, date, HSICCD) %>%
+      merge(tail_q20, by="HSICCD") %>%
+      group_by(date) %>% 
+      summarise_at(vars(RET), funs(mean(., na.rm=TRUE))), by="date") %>%
+  glimpse()
+
+idio_vol_portfolio_ret %>%
+  mutate(port_ret = RET.x - RET.y) %>%
+  summarise_at(vars(port_ret), funs(mean(., na.rm=TRUE), sd(., na.rm=TRUE))) %>%
+  glimpse()
+```
+- The quintile porfolio (sorting over idiosyncracy volitility)'s return is shown above  
+- When the quintile porfolio is formed by sorting over idiosyncracy volitility we have mean daily return of -0.00023
+- That means we have a averagely negative return every day.
+
+## Summary
+- From the decomposition of total volitility by systematic volility and idiosyncracy volitility
+- Systematic votility is smaller than idiosyncracy volitility in magnitudes.
+- The performances of systematic volitility sorted quintile porfolio is better
+- It is probably because the systematic trend of increasing since 2008
+- It is consistent with the trend of rising of passive investment, which capture more in systematic volitility
+

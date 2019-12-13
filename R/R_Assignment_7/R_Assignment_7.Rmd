@@ -1,0 +1,473 @@
+---
+title: "R_Assignment_7 - Method 3"
+output: html_document
+Author: Lei Yang 903532922
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+```
+
+## Library
+```{r}
+library(dplyr)
+library(tidyverse)
+library(readr)
+library(lubridate)
+library(rootSolve)
+```
+
+
+## Import Data
+```{r cars}
+sub_dsf <- read_csv("~/R_Assignment_7/sub_dsf.csv") 
+
+sub_funda <- read_csv("~/R_Assignment_7/sub_funda.csv")
+
+DTB3 <- read_csv("~/R_Assignment_7/DTB3.csv") %>% 
+  rename(year = DATE) %>% 
+  mutate(year = as.double(str_sub(year, 1, 4)))
+  
+DTB3 %>% glimpse()
+```
+
+## Lag variables
+```{r}
+# lag F and other variables to make it available
+
+sub_funda = sub_funda %>% 
+  group_by(CUSIP) %>%
+  mutate(F_ = lag(F))
+sub_funda %>% glimpse()
+
+sub_dsf = sub_dsf %>% 
+   group_by(CUSIP) %>%
+  mutate(E = lag(E), annret = lag(annret), sigmae = lag(sigmae))
+sub_dsf %>% glimpse()
+
+funda_dsf = sub_funda %>% merge(sub_dsf)
+funda_dsf %>% glimpse()
+
+funda_dsf_fed = funda_dsf %>% 
+  merge(DTB3) %>% 
+  mutate(r = log(1+DTB3/100)) %>%
+  glimpse()
+```
+
+## Naive Approach
+
+```{r}
+naive_result = funda_dsf_fed %>% 
+  mutate(sigmad = 0.05 + 0.25* sigmae, sigmad1 = sigmae * 0.5 + 0.05, sigmad2 = sigmae * 0.25) %>%
+  mutate(naivesigmav = (E / (E +F_) * sigmae + (F_ / (E + F_)) * sigmad)) %>%
+  mutate(naivesigmav1 = (E / (E +F_) * sigmae + (F_ / (E + F_)) * sigmad1)) %>%
+  mutate(naivesigmav2 = (E / (E +F_) * sigmae + (F_ / (E + F_)) * sigmad2)) %>%
+  mutate(DDnaive = (log((E+F_)/F_) + (r  - naivesigmav ^ 2 / 2)) / naivesigmav) %>%
+  mutate(DDnaive1 = (log((E+F_)/F_) + (r  - naivesigmav1 ^ 2 / 2)) / naivesigmav1) %>%
+  mutate(DDnaive2 = (log((E+F_)/F_) + (r  - naivesigmav2 ^ 2 / 2)) / naivesigmav2) %>%
+  mutate(PDnaive = pnorm(-DDnaive)) %>%
+  mutate(PDnaive1 = pnorm(-DDnaive1)) %>%
+  mutate(PDnaive2 = pnorm(-DDnaive2)) %>%
+  glimpse()
+
+naive_result = naive_result %>% 
+  na.omit() %>%
+  glimpse()
+
+naive_result_finite = naive_result[is.finite(rowSums(naive_result %>% select(DDnaive, DDnaive1, DDnaive2, PDnaive, PDnaive1, PDnaive2))), ]
+naive_result_stats = naive_result_finite %>% na.omit() %>% 
+  select(DDnaive, DDnaive1, DDnaive2, PDnaive, PDnaive1, PDnaive2) %>%
+  summarise_all(list(mean=function(x)mean.default(x),p25=function(x)quantile(x, .25,na.rm= T), p50=function(x)quantile(x, .50,na.rm= T), p75=function(x)quantile(x, .75,na.rm= T))) %>%
+  glimpse()
+  
+naive_result_stats %>% glimpse()
+```
+
+## Directly Solving
+```{r}
+
+
+model <- function(x, parms)
+{
+  d1 = (log(x[1] / parms[2]) + (parms[3] + x[2] ^ 2/ 2)) / x[2]
+  c(
+    F1 = x[1] * pnorm(d1) - exp(-parms[3]) * parms[2] * pnorm(d1 - x[2]) - parms[1],
+    F2 = x[1] / parms[1] * pnorm(d1) * x[2] - parms[4]
+      )
+}
+
+# define jacobian matrix to speed up convergence
+jacfunc <- function(x, parms)
+{
+  jac = matrix(nrow = 2, ncol = 2)
+
+  d1 = (log(x[1] / parms[2]) + (parms[3] + x[2] ^ 2/ 2)) / x[2]
+  print(x[1] / parms[2])
+  jac[1, 1] = pnorm(d1)
+  jac[1, 2] = x[1] * dnorm(d1)
+  jac[2, 1] = dnorm(d1) / parms[1] * pnorm(d1)
+  jac[2, 2] = x[1] / parms[1] * pnorm(d1) + x[1] / parms[1] * dnorm(d1) * ( -d1 + x[2])
+  jac
+}
+
+find_roots <- function(E, F_, r, sigmae)
+{
+  naivesigmav = E / (E +F_) * sigmae + (F_ / (E + F_)) * (0.05 + 0.24 * sigmae)
+  multiroot(model, start=c(E + F_, naivesigmav), parms = c(E, F_, r, sigmae), jacfunc = jacfunc)
+}
+
+find_v <- function(E, F_, r, sigmae)
+{
+  root = find_roots(E, F_, r, sigmae)
+  root$root[1]
+}
+
+find_sigmav <- function(E, F_, r, sigmae)
+{
+  root = find_roots(E, F_, r, sigmae)
+  root$root[2]
+}
+# jacfunc(c(71311500, 0.3447364), parms=c(71311500, 2597000, 0.04736057, 0.3447364))
+
+find_v(71311500, 2597000, 0.04736057, 0.3447364)
+find_sigmav(71311500, 2597000, 0.04736057, 0.3447364)
+
+# test result
+x = c(find_v(71311500, 2597000, 0.04736057, 0.3447364), find_sigmav(71311500, 2597000, 0.04736057, 0.3447364))
+model(x, c(71311500, 2597000, 0.04736057, 0.3447364))
+```
+
+
+```{r}
+naive_result %>% glimpse()
+
+vector_find_v <- Vectorize(find_v, c("E", "F_", "r", "sigmae"))
+vector_find_sigmav <- Vectorize(find_sigmav, c("E", "F_", "r", "sigmae"))
+
+direct_results = naive_result %>% na.omit() %>%
+  mutate(VMethod2 = vector_find_v(E, F_, r, sigmae), SigmavMethod2 = vector_find_sigmav(E, F_, r, sigmae))
+
+direct_results %>% glimpse()
+```
+
+## Caculating use the evaluated results
+```{r}
+
+direct_results = direct_results %>%
+  mutate(DDMethod2 = (log(VMethod2/F_) + (r  - SigmavMethod2 ^ 2 / 2)) / SigmavMethod2) %>%
+  mutate(PDMethod2 = pnorm(-DDMethod2)) %>%
+  glimpse()
+  
+
+```
+
+## Filtering out irregular results
+```{r}
+
+direct_results  = direct_results[is.finite(rowSums(direct_results %>%
+  select(DDnaive, PDnaive, DDMethod2, PDMethod2))),]
+direct_results = direct_results[abs(direct_results$DDMethod2) < 10, ]
+  
+
+```
+
+## Correlations and Summarise
+```{r}
+p25 = function(x)quantile(x, .25,na.rm= T)
+p50 = function(x)quantile(x, .50,na.rm= T)
+p75 = function(x)quantile(x, .75,na.rm= T)
+
+measures = direct_results %>%
+  select(DDnaive, PDnaive, DDMethod2, PDMethod2)
+
+measures %>% summarise_all(list(mean=function(x)mean.default(x) ,p25=function(x)quantile(x, .25,na.rm= T), p50=function(x)quantile(x, .50,na.rm= T), p75=function(x)quantile(x, .75,na.rm= T))) %>% glimpse()
+
+cor(measures)
+
+```
+
+## Summarise by year
+```{r}
+stats = direct_results %>%
+  select(year, DDnaive, DDMethod2, PDnaive, PDMethod2) %>%
+  group_by(year) %>%
+  summarise_all(list(mean=function(x)mean.default(x),p25=function(x)quantile(x, .25,na.rm= T), p50=function(x)quantile(x, .50,na.rm= T), p75=function(x)quantile(x, .75,na.rm= T))) %>%
+  glimpse()
+```
+
+## Plot the mean, 25th, 50th and 75th percentiles of DD for the two measures across time
+```{r}
+stats = stats %>% mutate(date=as.Date(str_c(year, 1, 1, sep = "-"))) %>% glimpse()
+
+# plot mean
+ggplot(stats, aes(x=date)) +
+  geom_line(aes(y = DDnaive_mean), color = "darkred") + 
+  geom_line(aes(y = DDMethod2_mean), color="steelblue", linetype="twodash") 
+
+# plot p25
+ggplot(stats, aes(x=date)) +
+  geom_line(aes(y = DDnaive_p25), color = "darkred") + 
+  geom_line(aes(y = DDMethod2_p25), color="steelblue", linetype="twodash") 
+
+# plot p50
+ggplot(stats, aes(x=date)) +
+  geom_line(aes(y = DDnaive_p50), color = "darkred") + 
+  geom_line(aes(y = DDMethod2_p50), color="steelblue", linetype="twodash") 
+
+# plot p75
+ggplot(stats, aes(x=date)) +
+  geom_line(aes(y = DDnaive_p75), color = "darkred") + 
+  geom_line(aes(y = DDMethod2_p75), color="steelblue", linetype="twodash") 
+
+```
+
+## Plotting over BAAFFM
+```{r}
+# this function plots both first and secondary axis
+plot_overlay <- function(inp_data, col1, col2)
+{
+  par(mar = c(5, 4, 4, 4) + 0.3)  # Leave space for z axis
+  plot(inp_data[['date']], inp_data[[col1]], type = "l",xlab = "date", ylab = col1) # first plot
+  par(new = TRUE)
+  plot(inp_data[['date']], inp_data[[col2]], type = "l", col='red', axes = FALSE, bty = "n", xlab = "", ylab="")
+  axis(side=4)
+  mtext(col2, side=4, line=3)
+  legend("topleft",legend=c(col1, col2),
+    text.col=c("black","red"),lty=1:1, col=c("black","red"))
+}
+
+# import BAAFFM data
+BAAFFM = read.csv('BAAFFM.csv') %>%
+  rename(date=DATE) %>%
+  mutate(date=ymd(date)) %>%
+  mutate(BAAFFM = as.double(BAAFFM)) %>%
+  glimpse()
+
+
+stats_with_baaffm <- merge(BAAFFM, stats, by='date') %>%
+  glimpse()
+
+
+plot_overlay(stats_with_baaffm, "DDnaive_mean", "BAAFFM")
+plot_overlay(stats_with_baaffm, "PDnaive_mean", "BAAFFM")
+```
+
+## Plotting over CFSI
+
+```{r}
+CFSI = read.csv('CFSI.csv') %>%
+  rename(date=DATE) %>%
+  mutate(date=ymd(date)) %>%
+  mutate( CFSI = as.double(CFSI)) %>%
+  glimpse()
+
+stats_with_cfsi <- merge(CFSI, stats, by='date') %>%
+  glimpse()
+
+plot_overlay(stats_with_cfsi, "DDnaive_mean", "CFSI")
+plot_overlay(stats_with_cfsi, "PDnaive_mean", "CFSI")
+```
+
+## Plotting over NBER
+```{r}
+NBER = read.csv('USREC.csv') %>%
+  rename(date=DATE) %>%
+  mutate(date=ymd(date)) %>%
+  mutate( USREC = as.double(USREC)) %>%
+  glimpse()
+
+stats_with_nber <- merge(NBER, stats, by='date') %>%
+  glimpse()
+
+plot_overlay(stats_with_nber, "DDnaive_mean", "USREC")
+plot_overlay(stats_with_nber, "PDnaive_mean", "USREC")
+```
+
+## Iterative Approach
+
+```{r}
+direct_results = direct_results %>% 
+  mutate(IterSigmav = sigmae, IterV=NA) %>%
+  glimpse()
+```
+
+```{r}
+model1 <- function(x, parms)
+{
+  d1 = (log(x[1] / parms[2]) + (parms[3] + parms[5] ^ 2/ 2)) / parms[5]
+  c(
+    F1 = x[1] * pnorm(d1) - exp(-parms[3]) * parms[2] * pnorm(d1 - parms[5]) - parms[1]
+      )
+}
+jacfunc1 <- function(x, parms)
+{
+  jac = matrix(nrow = 1, ncol = 1)
+  d1 = (log(x[1] / parms[2]) + (parms[3] + parms[5] ^ 2/ 2)) / parms[5]
+  jac[1, 1] = pnorm(d1)
+  return(jac)
+}
+find_roots_v <- function(E, F_, r, sigmae, IterSigmav)
+{
+  root = multiroot(model1, start=c(E + F_), parms = c(E, F_, r, sigmae, IterSigmav), jacfunc = jacfunc1)
+  root$root[1]
+}
+
+find_roots_v(71311500, 2597000, 0.04736057, 0.3447364, 100)
+
+# test result
+x = c(find_roots_v(71311500, 2597000, 0.04736057, 0.3447364, 100))
+x
+model1(x, c(71311500, 2597000, 0.04736057, 0.3447364, 100))
+
+model2 <- function(x, parms)
+{
+  d1 = (log(parms[5] / parms[2]) + (parms[3] + x[1] ^ 2/ 2)) / x[1]
+  c(F1 = parms[5] / parms[1] * pnorm(d1) * x[1] - parms[4])
+}
+
+jacfunc2 <- function(x, parms)
+{
+  jac = matrix(nrow = 1, ncol = 1)
+  d1 = (log(parms[5] / parms[2]) + (parms[3] + x[1] ^ 2/ 2)) / x[1]
+  jac[1, 1] = parms[5] / parms[1] * pnorm(d1) + parms[5] / parms[1] * dnorm(d1) * ( -d1 + x[1])
+  return(jac)
+}
+
+find_roots_sigmav <- function(E, F_, r, sigmae, IterV)
+{
+  root = multiroot(model2, start=c(sigmae), parms = c(E, F_, r, sigmae, IterV), jacfunc = jacfunc2)
+  root$root[1]
+}
+
+one_iterate <- function(E, F_, r, sigmae, IterSigmav)
+{
+  IterV = find_roots_v(E, F_, r, sigmae, IterSigmav)
+  IterSigmav = find_roots_sigmav(E, F_, r, sigmae, IterV)
+  IterSigmav
+}
+
+one_iterate(71311500, 2597000, 0.04736057, 0.3447364, 0.3331646)
+
+
+find_roots_sigmav(71311500, 2597000, 0.04736057, 0.3447364, 73788372)
+x = find_roots_sigmav(71311500, 2597000, 0.04736057, 0.3447364, 73788372)
+model2(x, c(71311500, 2597000, 0.04736057, 0.3447364, 73788372))
+
+
+now = 0
+iterate = function(E, F_, r,sigmae, IterSigmav)
+{
+  out <- tryCatch(
+    {
+        IterSigmav1 = one_iterate(E, F_, r, sigmae,IterSigmav)
+        
+        n = 0
+        while(n < 10 && abs(IterSigmav1 - IterSigmav) > 0.0001)
+        {
+          IterSigmav = IterSigmav1
+          IterSigmav1 = one_iterate(E, F_, r, sigmae,IterSigmav)
+          n = n + 1
+        }
+
+        return(IterSigmav1)
+    },
+    error=function(cond)
+    {
+      return(NA)
+    },
+    warning=function(cond)
+    {
+      return(NA)
+    }
+  )
+  return(out)
+}
+
+iterate(71311500, 2597000, 0.04736057, 0.3447364, 0.1)
+```
+
+```{r}
+
+for(i in seq(1, 138895))
+{
+  E = direct_results[i, 'E']
+  F_ = direct_results[i, 'F_']
+  r = direct_results[i, 'r']
+  sigmae = direct_results[i, 'sigmae']
+  IterSigmav = direct_results[i, 'IterSigmav']
+  print(i)
+  if(!is.na(IterSigmav))
+  {
+   direct_results[i, 'IterSigmav'] = iterate(E, F_, r, sigmae, IterSigmav)
+  }
+ 
+  IterSigmav = direct_results[i, 'IterSigmav']
+  if(!is.na(IterSigmav))
+  {
+    direct_results[i, 'IterV'] = find_roots_v(E, F_, r, sigmae, IterSigmav)
+  }
+}
+direct_results %>% glimpse()
+```
+
+```{r}
+direct_results = direct_results %>%
+  mutate(DDMethod3 = (log(IterV/F_) + (r  - IterSigmav ^ 2 / 2)) / IterSigmav) %>%
+  mutate(PDMethod3 = pnorm(-DDMethod3)) %>%
+  glimpse()
+```
+
+```{r}
+direct_results %>% 
+  na.omit() %>%
+  select(DDMethod3, PDMethod3) %>%
+  summarise_all(list(mean=function(x)mean.default(x) ,p25=function(x)quantile(x, .25,na.rm= T), p50=function(x)quantile(x, .50,na.rm= T), p75=function(x)quantile(x, .75,na.rm= T))) %>% glimpse()
+
+
+
+measures = direct_results %>% 
+  na.omit() %>%
+  select(DDnaive, PDnaive, DDMethod2, PDMethod2, DDMethod3, PDMethod3)
+
+measures %>% summarise_all(list(mean=function(x)mean.default(x) ,p25=function(x)quantile(x, .25,na.rm= T), p50=function(x)quantile(x, .50,na.rm= T), p75=function(x)quantile(x, .75,na.rm= T))) %>% glimpse()
+
+cor(measures)
+```
+
+```{r}
+stats = direct_results %>%
+  na.omit() %>%
+  select(year, DDnaive, DDMethod2, DDMethod3, PDnaive, PDMethod2, PDMethod3) %>%
+  group_by(year) %>%
+  summarise_all(list(mean=function(x)mean.default(x),p25=function(x)quantile(x, .25,na.rm= T), p50=function(x)quantile(x, .50,na.rm= T), p75=function(x)quantile(x, .75,na.rm= T))) %>%
+  glimpse()
+```
+
+
+```{r}
+stats = stats %>% mutate(date=as.Date(str_c(year, 1, 1, sep = "-"))) %>% glimpse()
+
+# plot mean
+ggplot(stats, aes(x=date)) +
+  geom_line(aes(y = DDnaive_mean), color = "darkred") + 
+  geom_line(aes(y = DDMethod2_mean), color="steelblue")+
+  geom_line(aes(y = DDMethod3_mean), color="lightgreen")
+
+# plot p25
+ggplot(stats, aes(x=date)) +
+  geom_line(aes(y = DDnaive_p25), color = "darkred") + 
+  geom_line(aes(y = DDMethod2_p25), color="steelblue", linetype="twodash")+
+  geom_line(aes(y = DDMethod3_p25), color="lightgreen")
+
+# plot p50
+ggplot(stats, aes(x=date)) +
+  geom_line(aes(y = DDnaive_p50), color = "darkred") + 
+  geom_line(aes(y = DDMethod2_p50), color="steelblue", linetype="twodash") +
+  geom_line(aes(y = DDMethod3_p50), color="lightgreen")
+
+# plot p75
+ggplot(stats, aes(x=date)) +
+  geom_line(aes(y = DDnaive_p75), color = "darkred") + 
+  geom_line(aes(y = DDMethod2_p75), color="steelblue", linetype="twodash") 
+```
+
