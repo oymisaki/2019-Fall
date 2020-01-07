@@ -1,0 +1,194 @@
+@startuml
+BSModel <|-- BSModelCall
+BSModel <|-- BSModelPut
+
+BSModel : virtual double operator()() = 0
+BSModel : virtual double vega() 
+BSModel : virtual double delta() = 0
+BSModel : virtual double impliedVol()
+BSModelCall : virtual double operator()()
+BSModelCall : virtual double delta()
+BSModelCall : Virtual double impliedVol()
+BSModelPut : virtual double operator()()
+BSModelPut : virtual double delta()
+BSModelPut : Virtual double impliedVol()
+
+BSModel -- VanillaOption : < use
+VanillaOption <|-- VanillaCallOption
+VanillaOption <|-- VanillaPutOption
+
+class VanillaOption {
+    double k
+    double p
+    double t
+    virtual double ImpliedVol(double s, double r) const = 0
+}
+
+class VanillaCallOption {
+    virtual double ImpliedVol(double s, double r)
+}
+
+class VanillaPutOption {
+    virtual double ImpliedVol(double s, double r)
+}
+
+together {
+    class RandomBase
+    class RandomNormal
+    class SamplePath
+    class DiffusionStockSamplePath
+}
+
+SamplePath -- RandomBase : > use
+SamplePath <|-- DiffusionStockSamplePath
+
+class SamplePath {
+    vector<double> path
+    virtual void generatePath(int N, RandomBase& rnum) = 0;
+    virtual const vector<double>& getPath() const = 0;
+}
+
+class DiffusionStockSamplePath {
+    double S0
+    double dt
+    double mu
+    double sigma
+    vector<double> path
+    virtual void generatePath(int N, RandomBase& rnum)
+    virtual const vector<double>& getPath() const
+}
+
+
+RandomBase <|-- RandomNormal
+
+class RandomBase {
+    virtual double generate() = 0;
+}
+
+class RandomNormal {
+    int seed
+    int mean
+    int sigma
+    lagged_fibonacci1279 rng
+    normal_distribution<> norm
+    variate_generator<lagged_fibonacci1279&, normal_distribution<>> generator
+    virtual double generate()
+}
+
+
+
+Simulator -- SamplePath : > use
+Simulator -- BSModel : > use
+
+class Simulator
+{
+    SamplePath *generator;
+    BSModel *model;
+    vector<double> optionPrices;
+    vector<double> hedgeErrors;
+    vector<double> deltas;
+    Simulator(SamplePath *generator_, BSModel *model_);
+    void simulate(int N, double K, double T, double r, double sigma);
+    void clear();
+}
+
+class Table {
+    vector<vector<string>> raw;
+    vector<string> headers;
+    multimap<string, unsigned int> index;
+    void readFromCsv(string path, int lineNum);
+    void writeCsv(string path) const;
+    void setHeaders(vector<string> headers);
+    void setIndex(string colName);
+    void setMultiIndex(vector<int> indexes);
+    void addCol(string colName, const vector<double>& col);
+    void ...();
+}
+
+together {
+    class Parameters
+    class ResultGatherer
+    class ImpliedVolGatherer
+    class DeltaGatherer
+    class PNLGatherer
+    class HedgeErrorGatherer
+}
+
+class Parameters 
+{
+    const string date
+    
+    const double S
+    const double K
+    const double V
+    const double r
+    const double t
+
+    shared_ptr<BSModel> bsm
+    shared_ptr<VanillaOption> option
+}
+
+Parameters - ResultGatherer :  use
+ResultGatherer <|- ImpliedVolGatherer
+ResultGatherer <|-- DeltaGatherer
+ResultGatherer <|-- PNLGatherer
+ResultGatherer <|-- HedgeErrorGatherer
+
+class ResultGatherer
+{
+    vector<double> result
+    virtual void gatherResult(const Parameters& p) = 0
+    virtual const vector<double>& getResult() const
+}
+
+class ImpliedVolGatherer
+{
+    virtual void gatherResult(const Parameters& p)
+}
+
+class DeltaGatherer
+{
+    ImpliedVolGatherer* innerGatherer
+    virtual void gatherResult(const Parameters& p)
+}
+
+class PNLGatherer
+{
+    double P0
+    virtual void gatherResult(const Parameters& p)
+}
+
+class HedgeErrorGatherer
+{
+    string date0
+    double delta0
+    double bond0
+    double r0
+
+    ResultGatherer* innerGatherer
+    virtual void gatherResult(const Parameters& p)
+}
+
+HedgeSystem -- ResultGatherer : > use
+HedgeSystem - Table : > use
+
+class HedgeSystem
+{
+
+    Table interestData;
+    Table optionData;
+    Table stockData;
+    vector<string> uniqueOptions; 
+
+    string outDir;
+    void runAll(); 
+    void runOne(string t0, string tn, string expire, string flag, string K);
+    void readInterestData(string path, int lineNum);
+    void readOptionData(string path, int lineNum);
+    void readstockData(string path, int lineNum);
+    void setResultGatherer(vector<ResultGatherer *> gatherers_);
+    void ...()
+}
+
+
+@enduml
